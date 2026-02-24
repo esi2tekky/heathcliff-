@@ -1,0 +1,19 @@
+# Data (too large for git)
+data/raw/
+data/translations/
+data/labmt_fr.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Output artifacts
+output/plots/*.png
+output/plots/*.pdf
+
+# IDE
+.vscode/
+.idea/
+*.swp
