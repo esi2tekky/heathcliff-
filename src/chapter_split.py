@@ -129,13 +129,29 @@ def _detect_chapter_pattern(text: str, lang: str, expected_chapters: int = None)
 
     for label, regex in patterns:
         matches = list(regex.finditer(text))
-        n = len(matches)
+        if len(matches) < 2:
+            continue
+
+        # Filter out table-of-contents entries: real chapters have
+        # substantial text between headings (>= 500 chars).
+        positions = [m.start() for m in matches]
+        filtered = [positions[0]]
+        for pos in positions[1:]:
+            if pos - filtered[-1] >= 500:
+                filtered.append(pos)
+            else:
+                logger.debug(
+                    "Filtering likely TOC entry at pos %d (only %d chars "
+                    "after previous heading).",
+                    pos, pos - filtered[-1],
+                )
+        n = len(filtered)
         if n < 2:
             continue
 
         if expected_chapters is None:
             logger.info("Pattern %s matched %d chapters (no expectation).", label, n)
-            return label, regex, [m.start() for m in matches]
+            return label, regex, filtered
 
         abs_ok = abs(n - expected_chapters) <= 3
         pct_ok = abs(n - expected_chapters) <= 0.20 * expected_chapters
@@ -144,7 +160,7 @@ def _detect_chapter_pattern(text: str, lang: str, expected_chapters: int = None)
                 "Pattern %s matched %d chapters (expected ~%d).",
                 label, n, expected_chapters,
             )
-            return label, regex, [m.start() for m in matches]
+            return label, regex, filtered
         else:
             logger.debug(
                 "Pattern %s gave %d matches, expected ~%d — skipping.",

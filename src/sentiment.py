@@ -123,10 +123,16 @@ def _load_chapters(book: dict, version: str) -> list[dict]:
 
 def _score_vader(text: str) -> float:
     """Score a single text using VADER. Returns compound score in [-1, 1]."""
+    import ssl
     import nltk
     from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-    nltk.download("vader_lexicon", quiet=True)
+    # Work around missing SSL certificates on some macOS Python installs.
+    try:
+        nltk.download("vader_lexicon", quiet=True)
+    except Exception:
+        ssl._create_default_https_context = ssl._create_unverified_context
+        nltk.download("vader_lexicon", quiet=True)
     sia = SentimentIntensityAnalyzer()
     scores = sia.polarity_scores(text)
     return scores["compound"]
