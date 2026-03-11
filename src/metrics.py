@@ -496,7 +496,10 @@ def compute_book_metrics(
         methods = DEFAULT_METHODS
 
     slug = book["slug"]
-    v_original, v_human, v_llm = config.get_versions(book)
+    versions = config.get_versions(book)
+    v_original = versions[0]
+    v_human = versions[1]
+    v_llm = versions[2]
 
     results: dict = {}
 
@@ -513,7 +516,7 @@ def compute_book_metrics(
             )
             continue
 
-        # Build the three pairs.
+        # Build pairs.
         pairs = {
             "original_vs_human": (scores_orig, scores_human),
             "original_vs_llm": (scores_orig, scores_llm),

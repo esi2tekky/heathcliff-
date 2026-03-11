@@ -91,9 +91,9 @@ def _version_to_path(book: dict, version: str) -> Path:
     """Map a version label to its chapter-JSON file path.
 
     Version labels and their corresponding file locations:
-      - fr_original / en_original -> data/processed/{slug}_fr.json / _en.json
-      - en_human / fr_human       -> data/processed/{slug}_en.json / _fr.json
-      - en_llm / fr_llm           -> data/translations/{slug}_llm.json
+      - fr_original / en_original   -> data/processed/{slug}_fr.json / _en.json
+      - en_human / fr_human         -> data/processed/{slug}_en.json / _fr.json
+      - en_llm / fr_llm             -> data/translations/{slug}_llm.json
     """
     slug = book["slug"]
     if version.endswith("_llm"):
@@ -463,7 +463,7 @@ def _load_full_text(book: dict, version: str) -> str:
     - ``_llm`` versions: concatenate chapter texts from the translation JSON
     """
     slug = book["slug"]
-    if version.endswith("_llm"):
+    if "_llm" in version:
         path = config.TRANSLATIONS_DIR / f"{slug}_llm.json"
         if not path.exists():
             raise FileNotFoundError(

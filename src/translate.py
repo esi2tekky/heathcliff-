@@ -1,13 +1,17 @@
 """LLM translation of chapter-split texts via Vertex AI (Gemini).
 
-Translates each chapter individually, with checkpoint/resume support.
-Saves progress after every chapter so interrupted runs can continue.
+Two translation modes:
+  - Sequential: chapter-by-chapter with checkpoint/resume support.
+  - Parallel: splits the book into ~N sub-parts and translates them
+    concurrently (~20 parallel API calls), then stitches results back
+    into the chapter structure.
 """
 
 import argparse
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import vertexai
@@ -193,6 +197,169 @@ def translate_book(book: dict, force: bool = False) -> dict:
 
     logger.info(
         "Translation complete for %s: %d chapters, "
+        "%d total input tokens, %d total output tokens.",
+        book["title"],
+        result["metadata"]["n_chapters_translated"],
+        result["metadata"]["total_input_tokens"],
+        result["metadata"]["total_output_tokens"],
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Parallel translation (concurrent API calls)
+# ---------------------------------------------------------------------------
+
+def _translate_part(
+    model: GenerativeModel,
+    part_index: int,
+    text: str,
+    system_prompt: str,
+) -> tuple[int, dict]:
+    """Translate a single sub-part, returning (index, result_dict).
+
+    Thread-safe wrapper around _translate_chapter for use with
+    ThreadPoolExecutor.
+    """
+    result = _translate_chapter(model, text, system_prompt)
+    return part_index, result
+
+
+def translate_book_parallel(book: dict, force: bool = False) -> dict:
+    """Translate a book using ~N parallel Gemini API calls.
+
+    Splits the source text into sub-parts (one per chapter or more), fires
+    off up to config.PARALLEL_WORKERS concurrent requests, and stitches the
+    results back together in order.
+
+    Parameters
+    ----------
+    book : dict
+        Book entry from config.BOOKS.
+    force : bool
+        If True, discard any existing progress and retranslate from scratch.
+
+    Returns
+    -------
+    dict
+        Same format as translate_book().
+    """
+    slug = book["slug"]
+    orig_lang = config.original_lang(book)
+    trans_lang = config.translation_lang(book)
+
+    input_path = config.PROCESSED_DIR / f"{slug}_{orig_lang}.json"
+    if not input_path.exists():
+        raise FileNotFoundError(
+            f"Chapter-split file not found: {input_path}. "
+            f"Run chapter splitting first."
+        )
+
+    with open(input_path, "r", encoding="utf-8") as f:
+        source_data = json.load(f)
+
+    source_chapters = source_data["chapters"]
+    n_chapters = len(source_chapters)
+
+    config.TRANSLATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = config.TRANSLATIONS_DIR / f"{slug}_llm.json"
+
+    # ----- Load existing checkpoint or initialise --------------------------
+    result = None
+    if output_path.exists() and not force:
+        with open(output_path, "r", encoding="utf-8") as f:
+            result = json.load(f)
+        logger.info(
+            "Resuming parallel %s: %d / %d chapters already translated.",
+            slug,
+            result["metadata"]["n_chapters_translated"],
+            n_chapters,
+        )
+    if result is None:
+        result = {
+            "title": book["title"],
+            "author": book["author"],
+            "language": trans_lang,
+            "source_language": orig_lang,
+            "direction": book["direction"],
+            "model": config.GEMINI_MODEL_TRANSLATE,
+            "n_chapters": n_chapters,
+            "chapters": [None] * n_chapters,
+            "metadata": {
+                "n_chapters_translated": 0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+            },
+        }
+
+    # Identify chapters that still need translation.
+    pending = [
+        (i, src_ch)
+        for i, src_ch in enumerate(source_chapters)
+        if result["chapters"][i] is None
+    ]
+
+    if not pending:
+        logger.info("All %d chapters already translated for %s.", n_chapters, slug)
+        return result
+
+    logger.info(
+        "Parallel translation of %s: %d chapters to translate with up to %d workers.",
+        book["title"], len(pending), config.PARALLEL_WORKERS,
+    )
+
+    system_prompt = _system_prompt(book)
+    vertexai.init(project=config.GCP_PROJECT_ID, location=config.GCP_REGION)
+    model = GenerativeModel(config.GEMINI_MODEL_TRANSLATE)
+
+    # Fire off all pending chapters concurrently.
+    with ThreadPoolExecutor(max_workers=config.PARALLEL_WORKERS) as executor:
+        futures = {
+            executor.submit(
+                _translate_part, model, i, src_ch["text"], system_prompt,
+            ): (i, src_ch)
+            for i, src_ch in pending
+        }
+
+        for future in as_completed(futures):
+            i, src_ch = futures[future]
+            try:
+                _, api_result = future.result()
+            except Exception:
+                logger.exception(
+                    "Failed to translate chapter %d of %s", i + 1, book["title"],
+                )
+                continue
+
+            translated_text = api_result["translated_text"]
+            result["chapters"][i] = {
+                "number": src_ch.get("number", i + 1),
+                "title": src_ch.get("title", ""),
+                "text": translated_text,
+                "char_count": len(translated_text),
+                "word_count": len(translated_text.split()),
+                "input_tokens": api_result["input_tokens"],
+                "output_tokens": api_result["output_tokens"],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+            result["metadata"]["n_chapters_translated"] += 1
+            result["metadata"]["total_input_tokens"] += api_result["input_tokens"]
+            result["metadata"]["total_output_tokens"] += api_result["output_tokens"]
+
+            # Checkpoint after each completed chapter.
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+
+            logger.info(
+                "  Chapter %d / %d done — %d input tokens, %d output tokens.",
+                i + 1, n_chapters,
+                api_result["input_tokens"],
+                api_result["output_tokens"],
+            )
+
+    logger.info(
+        "Parallel translation complete for %s: %d chapters, "
         "%d total input tokens, %d total output tokens.",
         book["title"],
         result["metadata"]["n_chapters_translated"],

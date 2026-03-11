@@ -1,0 +1,18 @@
+{
+  "title": "The Strange Case of Dr. Jekyll and Mr. Hyde",
+  "version": "en_original",
+  "method": "vader",
+  "scores": [
+    0.9986,
+    0.9538,
+    0.9992,
+    -0.2857,
+    0.994,
+    -0.9945,
+    0.9375,
+    -0.9992,
+    0.9941,
+    -0.9998
+  ],
+  "n_chapters": 10
+}

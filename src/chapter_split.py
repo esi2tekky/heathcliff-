@@ -166,6 +166,41 @@ def _detect_chapter_pattern(text: str, lang: str, expected_chapters: int = None)
     return None
 
 
+def _detect_explicit_titles(text: str, titles: list[str]):
+    """Detect chapters using an explicit list of title strings.
+
+    Used as a fallback for books whose chapters have unique named headings
+    rather than numbered patterns (e.g. Jekyll & Hyde).
+
+    Returns (label, None, positions) matching the _detect_chapter_pattern API,
+    or None if fewer than 2 titles are found.
+    """
+    positions = []
+    for title in titles:
+        # Match the title at the start of a line (ignoring leading whitespace)
+        pattern = re.compile(
+            r"^\s*" + re.escape(title) + r"\s*$", re.MULTILINE
+        )
+        matches = list(pattern.finditer(text))
+        if not matches:
+            logger.warning("Explicit title not found in text: %r", title)
+            continue
+        # If multiple matches exist (TOC + body), take the last one (body).
+        # If only one match, use it.
+        found = matches[-1]
+        positions.append(found.start())
+
+    if len(positions) < 2:
+        return None
+
+    # Sort by position in text
+    positions.sort()
+    logger.info(
+        "Explicit titles matched %d / %d chapters.", len(positions), len(titles)
+    )
+    return "EXPLICIT_TITLES", None, positions
+
+
 # ---------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------
@@ -249,6 +284,15 @@ def split_book(book: dict, lang: str, text: str) -> dict:
     expected = book.get("expected_chapters")
 
     result = _detect_chapter_pattern(text, lang, expected_chapters=expected)
+
+    # Fallback: use explicit chapter titles if provided in config.
+    if result is None:
+        titles_key = f"{lang}_chapter_titles"
+        explicit_titles = book.get(titles_key)
+        if explicit_titles:
+            logger.info("Trying explicit chapter titles for %s (%s).", book["slug"], lang)
+            result = _detect_explicit_titles(text, explicit_titles)
+
     if result is None:
         raise RuntimeError(
             f"Could not detect chapter boundaries for "

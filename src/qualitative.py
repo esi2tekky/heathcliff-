@@ -199,7 +199,10 @@ def generate_qualitative_report(
 
     Returns a dict with book metadata and per-pair divergence results.
     """
-    orig, human, llm = config.get_versions(book)
+    versions = config.get_versions(book)
+    orig = versions[0]
+    human = versions[1]
+    llm = versions[2]
 
     pairs = [
         ("original_vs_human", orig, human),

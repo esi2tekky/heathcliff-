@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from src.download import download_gutenberg, download_all_books
 from src.chapter_split import split_book, validate_chapter_counts
-from src.translate import translate_book
+from src.translate import translate_book, translate_book_parallel
 from src.sentiment import (
     analyze_book, analyze_all_books,
     analyze_book_sliding_window, analyze_all_books_sliding_window,
@@ -125,15 +125,23 @@ def phase_split(books: list[dict]) -> None:
         logger.exception("Split phase failed")
 
 
-def phase_translate(books: list[dict], *, skip_llm: bool = False, force: bool = False) -> None:
-    """Translate chapters via the Anthropic API."""
+def phase_translate(
+    books: list[dict],
+    *,
+    skip_llm: bool = False,
+    force: bool = False,
+    parallel: bool = False,
+) -> None:
+    """Translate chapters via Vertex AI (Gemini)."""
     _phase_header("translate")
     if skip_llm:
         logger.info("--skip-llm-translate flag set; skipping translation phase")
         return
+    translate_fn = translate_book_parallel if parallel else translate_book
+    mode_label = "parallel" if parallel else "sequential"
     try:
-        for book in tqdm(books, desc="Translating"):
-            translate_book(book, force=force)
+        for book in tqdm(books, desc=f"Translating ({mode_label})"):
+            translate_fn(book, force=force)
     except Exception:
         logger.exception("Translate phase failed")
 
@@ -269,13 +277,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sentiment-methods",
         nargs="+",
-        default=["vader", "labmt", "xlm_roberta"],
-        help="Sentiment methods to use (default: vader labmt xlm_roberta)",
+        default=["xlm_roberta"],
+        help="Sentiment methods to use (default: xlm_roberta)",
     )
     parser.add_argument(
         "--no-sliding-window",
         action="store_true",
         help="Skip the Reagan et al. sliding-window sentiment analysis",
+    )
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Use parallel translation (concurrent API calls per book)",
     )
     parser.add_argument(
         "--force",
@@ -308,7 +321,7 @@ def main() -> None:
 
     # ----- translate -----
     if run_all or args.phase == "translate":
-        phase_translate(books, skip_llm=args.skip_llm_translate, force=args.force)
+        phase_translate(books, skip_llm=args.skip_llm_translate, force=args.force, parallel=args.parallel)
 
     # ----- sentiment -----
     if run_all or args.phase == "sentiment":

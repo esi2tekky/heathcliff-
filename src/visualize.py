@@ -40,9 +40,9 @@ FONT_SIZE = 12
 DPI = 150
 
 VERSION_COLORS = {
-    "original": "#d62728",       # red
-    "human_translation": "#1f77b4",  # blue
-    "LLM_translation": "#2ca02c",    # green
+    "original": "#d62728",              # red
+    "human_translation": "#1f77b4",     # blue
+    "LLM_translation": "#2ca02c",       # green
 }
 
 VERSION_LABELS = {
@@ -160,7 +160,10 @@ def plot_arc_overlay(book: dict, method: str) -> None:
 
     ax.set_xlabel("Narrative Progress (%)")
     ax.set_ylabel("Sentiment Score")
-    ax.set_ylim(-1, 1)
+    # Auto-scale y-axis to data range with 10% padding
+    ymin, ymax = ax.get_ylim()
+    padding = (ymax - ymin) * 0.1
+    ax.set_ylim(ymin - padding, ymax + padding)
     ax.set_title(f"{title} \u2014 Emotional Arc ({method})")
     ax.legend(loc="best")
 
@@ -184,7 +187,10 @@ def plot_drift(book: dict, method: str) -> None:
     _apply_style()
     slug = book["slug"]
     title = book["title"]
-    orig_ver, human_ver, llm_ver = get_versions(book)
+    versions = get_versions(book)
+    orig_ver = versions[0]
+    human_ver = versions[1]
+    llm_ver = versions[2]
 
     try:
         orig_scores = _load_scores(slug, orig_ver, method)
@@ -196,6 +202,7 @@ def plot_drift(book: dict, method: str) -> None:
 
     # Truncate to the shortest arc length.
     min_len = min(len(orig_scores), len(human_scores), len(llm_scores))
+
     orig = np.asarray(orig_scores[:min_len])
     human = np.asarray(human_scores[:min_len])
     llm = np.asarray(llm_scores[:min_len])
