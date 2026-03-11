@@ -370,6 +370,326 @@ def translate_book_parallel(book: dict, force: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Best-of-N sentiment-guided reranking
+# ---------------------------------------------------------------------------
+
+def _translate_chapter_with_temp(
+    model: GenerativeModel,
+    text: str,
+    system_prompt: str,
+    temperature: float,
+) -> dict:
+    """Translate a chapter at a specific temperature."""
+    response = model.generate_content(
+        f"{system_prompt}\n\n{text}",
+        generation_config={
+            "temperature": temperature,
+            "max_output_tokens": config.TRANSLATE_MAX_TOKENS,
+        },
+    )
+    translated_text = response.text
+    usage = response.usage_metadata
+    return {
+        "translated_text": translated_text,
+        "input_tokens": usage.prompt_token_count,
+        "output_tokens": usage.candidates_token_count,
+    }
+
+
+def _score_text_xlm(text: str) -> float:
+    """Score a text with XLM-RoBERTa (imported from sentiment module)."""
+    from src.sentiment import _score_xlm_roberta
+    return _score_xlm_roberta(text)
+
+
+def _compute_mini_arc(text: str, n_windows: int = 10) -> list[float]:
+    """Compute a mini sentiment arc over a chapter using evenly-spaced windows.
+
+    Splits the chapter into *n_windows* overlapping windows and scores each
+    with XLM-RoBERTa, returning a list of scores that represents the
+    sentiment trajectory within the chapter.
+
+    Parameters
+    ----------
+    text : str
+        Full chapter text.
+    n_windows : int
+        Number of evenly-spaced sample points (default 10).
+
+    Returns
+    -------
+    list[float]
+        Sentiment score at each window position.
+    """
+    from src.sentiment import _xlm_score_single
+
+    words = text.split()
+    n_words = len(words)
+
+    # For very short chapters, return a single score.
+    if n_words < 50:
+        return [_score_text_xlm(text)]
+
+    # Window size: ~20% of the chapter, at least 50 words.
+    window_words = max(50, n_words // 5)
+    # Ensure we don't have more windows than possible positions.
+    n_windows = min(n_windows, max(1, n_words - window_words + 1))
+
+    if n_windows <= 1:
+        return [_score_text_xlm(text)]
+
+    scores = []
+    for i in range(n_windows):
+        start = int(i * (n_words - window_words) / (n_windows - 1))
+        end = start + window_words
+        chunk = " ".join(words[start:end])
+        scores.append(_xlm_score_single(chunk))
+
+    return scores
+
+
+def _pearson_correlation(a: list[float], b: list[float]) -> float:
+    """Compute Pearson correlation between two equal-length lists.
+
+    Returns 0.0 if either series has zero variance (constant values).
+    """
+    import numpy as np
+    a_arr = np.array(a)
+    b_arr = np.array(b)
+    if len(a_arr) != len(b_arr) or len(a_arr) < 2:
+        return 0.0
+    a_std = np.std(a_arr)
+    b_std = np.std(b_arr)
+    if a_std == 0 or b_std == 0:
+        return 0.0
+    return float(np.corrcoef(a_arr, b_arr)[0, 1])
+
+
+def translate_book_best_of_n(
+    book: dict,
+    n: int = 5,
+    temperature: float = 0.8,
+    force: bool = False,
+) -> dict:
+    """Translate with best-of-N shape-guided reranking.
+
+    For each chapter:
+      1. Compute a mini sentiment arc of the original text (n_windows sample
+         points within the chapter) using XLM-RoBERTa.
+      2. Generate N candidate translations in parallel at the given temperature.
+      3. Compute a mini arc for each candidate.
+      4. Select the candidate whose arc shape (Pearson correlation) most
+         closely matches the original's arc — optimizing for trajectory
+         fidelity, not magnitude matching.
+
+    Saves to ``{slug}_llm_bon{N}.json`` and also writes to the standard
+    ``{slug}_llm.json`` so downstream pipeline phases pick it up.
+
+    Parameters
+    ----------
+    book : dict
+        Book entry from config.BOOKS.
+    n : int
+        Number of candidate translations per chapter.
+    temperature : float
+        Sampling temperature for diversity (higher = more diverse).
+    force : bool
+        If True, retranslate from scratch.
+
+    Returns
+    -------
+    dict
+        Translation result with best-of-N metadata.
+    """
+    slug = book["slug"]
+    orig_lang = config.original_lang(book)
+    trans_lang = config.translation_lang(book)
+
+    input_path = config.PROCESSED_DIR / f"{slug}_{orig_lang}.json"
+    if not input_path.exists():
+        raise FileNotFoundError(
+            f"Chapter-split file not found: {input_path}. "
+            f"Run chapter splitting first."
+        )
+
+    with open(input_path, "r", encoding="utf-8") as f:
+        source_data = json.load(f)
+
+    source_chapters = source_data["chapters"]
+    n_chapters = len(source_chapters)
+
+    config.TRANSLATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    bon_path = config.TRANSLATIONS_DIR / f"{slug}_llm_bon{n}.json"
+    output_path = config.TRANSLATIONS_DIR / f"{slug}_llm.json"
+
+    # Number of windows per chapter for the mini-arc.
+    n_mini_windows = 10
+
+    # ----- Load existing checkpoint or initialise --------------------------
+    result = None
+    if bon_path.exists() and not force:
+        with open(bon_path, "r", encoding="utf-8") as f:
+            result = json.load(f)
+        logger.info(
+            "Resuming best-of-%d %s: %d / %d chapters done.",
+            n, slug,
+            result["metadata"]["n_chapters_translated"],
+            n_chapters,
+        )
+    if result is None:
+        result = {
+            "title": book["title"],
+            "author": book["author"],
+            "language": trans_lang,
+            "source_language": orig_lang,
+            "direction": book["direction"],
+            "model": config.GEMINI_MODEL_TRANSLATE,
+            "method": f"best_of_{n}_shape",
+            "best_of_n": n,
+            "temperature": temperature,
+            "selection_criterion": "pearson_correlation",
+            "n_chapters": n_chapters,
+            "chapters": [None] * n_chapters,
+            "metadata": {
+                "n_chapters_translated": 0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+            },
+        }
+
+    system_prompt = _system_prompt(book)
+    vertexai.init(project=config.GCP_PROJECT_ID, location=config.GCP_REGION)
+    model = GenerativeModel(config.GEMINI_MODEL_TRANSLATE)
+
+    for i, src_chapter in enumerate(source_chapters):
+        if result["chapters"][i] is not None:
+            logger.debug("Chapter %d already done (best-of-%d), skipping.", i + 1, n)
+            continue
+
+        logger.info(
+            "Best-of-%d (shape): %s — chapter %d / %d — computing original arc ...",
+            n, book["title"], i + 1, n_chapters,
+        )
+
+        # 1. Compute the original chapter's mini sentiment arc.
+        original_arc = _compute_mini_arc(src_chapter["text"], n_windows=n_mini_windows)
+        logger.info(
+            "  Original mini-arc (%d points): %s",
+            len(original_arc),
+            [f"{s:.3f}" for s in original_arc],
+        )
+
+        # 2. Generate N candidates in parallel.
+        logger.info("  Generating %d candidates at temperature=%.1f ...", n, temperature)
+        candidates = []
+        total_in = 0
+        total_out = 0
+
+        with ThreadPoolExecutor(max_workers=min(n, config.PARALLEL_WORKERS)) as executor:
+            futures = [
+                executor.submit(
+                    _translate_chapter_with_temp,
+                    model, src_chapter["text"], system_prompt, temperature,
+                )
+                for _ in range(n)
+            ]
+            for future in as_completed(futures):
+                try:
+                    api_result = future.result()
+                    candidates.append(api_result)
+                    total_in += api_result["input_tokens"]
+                    total_out += api_result["output_tokens"]
+                except Exception:
+                    logger.exception(
+                        "  Candidate generation failed for chapter %d", i + 1,
+                    )
+
+        if not candidates:
+            logger.error("  No candidates produced for chapter %d; skipping.", i + 1)
+            continue
+
+        # 3. Compute mini-arc for each candidate and correlate with original.
+        candidate_arcs = []
+        candidate_correlations = []
+        for j, cand in enumerate(candidates):
+            arc = _compute_mini_arc(cand["translated_text"], n_windows=n_mini_windows)
+            # Truncate to matching length (should be same, but be safe).
+            min_len = min(len(original_arc), len(arc))
+            corr = _pearson_correlation(original_arc[:min_len], arc[:min_len])
+            candidate_arcs.append(arc)
+            candidate_correlations.append(corr)
+            logger.debug("  Candidate %d correlation: %.4f", j + 1, corr)
+
+        # 4. Select the candidate with highest shape correlation.
+        best_idx = int(max(range(len(candidate_correlations)),
+                          key=lambda k: candidate_correlations[k]))
+        best_cand = candidates[best_idx]
+        best_text = best_cand["translated_text"]
+
+        logger.info(
+            "  Candidate correlations: %s",
+            [f"{c:.4f}" for c in candidate_correlations],
+        )
+        logger.info(
+            "  Selected candidate %d (correlation=%.4f, best shape match)",
+            best_idx + 1, candidate_correlations[best_idx],
+        )
+
+        # Also compute scalar scores for metadata/comparison.
+        original_scalar = _score_text_xlm(src_chapter["text"])
+        selected_scalar = _score_text_xlm(best_text)
+
+        result["chapters"][i] = {
+            "number": src_chapter.get("number", i + 1),
+            "title": src_chapter.get("title", ""),
+            "text": best_text,
+            "char_count": len(best_text),
+            "word_count": len(best_text.split()),
+            "input_tokens": total_in,
+            "output_tokens": total_out,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "bon_metadata": {
+                "n_candidates": len(candidates),
+                "selection_criterion": "pearson_correlation",
+                "original_arc": [round(s, 6) for s in original_arc],
+                "candidate_correlations": [round(c, 6) for c in candidate_correlations],
+                "selected_index": best_idx,
+                "selected_correlation": round(candidate_correlations[best_idx], 6),
+                "original_score": round(original_scalar, 6),
+                "selected_score": round(selected_scalar, 6),
+                "selection_diff": round(abs(selected_scalar - original_scalar), 6),
+            },
+        }
+
+        result["metadata"]["n_chapters_translated"] += 1
+        result["metadata"]["total_input_tokens"] += total_in
+        result["metadata"]["total_output_tokens"] += total_out
+
+        # Checkpoint to the bon-specific file.
+        with open(bon_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+        logger.info(
+            "  Chapter %d done — %d candidates, %d total tokens.",
+            i + 1, len(candidates), total_in + total_out,
+        )
+
+    # Also write to the standard _llm.json so the pipeline picks it up.
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    logger.info(
+        "Best-of-%d (shape) translation complete for %s: %d chapters, "
+        "%d total input tokens, %d total output tokens.",
+        n, book["title"],
+        result["metadata"]["n_chapters_translated"],
+        result["metadata"]["total_input_tokens"],
+        result["metadata"]["total_output_tokens"],
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Batch translation
 # ---------------------------------------------------------------------------
 

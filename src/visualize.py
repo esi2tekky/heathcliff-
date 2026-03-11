@@ -407,6 +407,242 @@ def plot_fidelity_scatter(results: dict, method: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Plot 5 -- Best-of-N comparison
+# ---------------------------------------------------------------------------
+
+BON_COLORS = {
+    "N=1": "#2ca02c",       # green (baseline LLM)
+    "N=5": "#ff7f0e",       # orange
+    "N=10": "#9467bd",      # purple
+}
+
+
+def plot_bon_comparison(book: dict, method: str, n_values: list[int] | None = None) -> None:
+    """Compare emotional arcs across different best-of-N settings.
+
+    Overlays the original arc with LLM translations at N=1, N=5, N=10 etc.
+    to visualize how reranking improves emotional fidelity.
+
+    Parameters
+    ----------
+    book : dict
+        A book entry from ``config.BOOKS``.
+    method : str
+        Sentiment method key (e.g. ``"sw_xlm_roberta"``).
+    n_values : list[int] or None
+        N values to compare.  Defaults to [1, 5, 10].
+    """
+    from src.config import TRANSLATIONS_DIR
+
+    if n_values is None:
+        n_values = [1, 5, 10]
+
+    _apply_style()
+    slug = book["slug"]
+    title = book["title"]
+    versions = get_versions(book)
+    orig_ver = versions[0]
+
+    fig, axes = plt.subplots(2, 1, figsize=(14, 10), height_ratios=[3, 1])
+    ax_arc, ax_diff = axes
+
+    # --- Original arc ---
+    try:
+        orig_raw = _load_scores(slug, orig_ver, method)
+    except FileNotFoundError:
+        logger.warning("Missing original scores for %s / %s", slug, method)
+        plt.close(fig)
+        return
+
+    x_orig = np.linspace(0, 100, len(orig_raw))
+    orig_smooth = _smooth(orig_raw)
+    ax_arc.plot(x_orig, orig_smooth, color="#d62728", linewidth=2.5, label="Original", zorder=10)
+
+    # --- Human translation ---
+    human_ver = versions[1]
+    try:
+        human_raw = _load_scores(slug, human_ver, method)
+        x_h = np.linspace(0, 100, len(human_raw))
+        human_smooth = _smooth(human_raw)
+        ax_arc.plot(x_h, human_smooth, color="#1f77b4", linewidth=2, alpha=0.7,
+                    label="Human Translation", linestyle="--")
+    except FileNotFoundError:
+        pass
+
+    # --- LLM arcs at different N values ---
+    llm_ver = versions[2]  # e.g. "fr_llm" or "en_llm"
+    arcs_for_diff: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
+    for n_val in n_values:
+        # Check if we have a bon-specific translation file
+        if n_val == 1:
+            # N=1 is the baseline — check for _llm_n1.json backup first,
+            # then fall back to the standard processed scores
+            bon_path = TRANSLATIONS_DIR / f"{slug}_llm_n1.json"
+            if bon_path.exists():
+                # Need to load scores from processed dir tagged with bon1
+                score_label = llm_ver
+            else:
+                score_label = llm_ver
+        else:
+            # For N>1, check if bon-specific scores exist
+            # The bon translation overwrites _llm.json, so scores are
+            # tagged with the standard llm version label
+            bon_path = TRANSLATIONS_DIR / f"{slug}_llm_bon{n_val}.json"
+            if not bon_path.exists():
+                logger.info("No best-of-%d translation found for %s", n_val, slug)
+                continue
+            score_label = llm_ver
+
+        try:
+            raw = _load_scores(slug, score_label, method)
+        except FileNotFoundError:
+            logger.info("No scores for %s / %s / %s (N=%d)", slug, score_label, method, n_val)
+            continue
+
+        label = f"N={n_val}"
+        color = BON_COLORS.get(label, f"C{n_val}")
+        x = np.linspace(0, 100, len(raw))
+        smoothed = _smooth(raw)
+
+        ax_arc.plot(x, smoothed, color=color, linewidth=2, label=f"LLM ({label})")
+
+        # Store for difference subplot
+        min_len = min(len(orig_smooth), len(smoothed))
+        arcs_for_diff[label] = (
+            np.interp(np.linspace(0, 100, min_len), x_orig, orig_smooth),
+            np.interp(np.linspace(0, 100, min_len), x, smoothed),
+        )
+
+    ax_arc.set_xlabel("Narrative Progress (%)")
+    ax_arc.set_ylabel("Sentiment Score")
+    ax_arc.set_title(f"{title} — Best-of-N Comparison ({method})")
+    ax_arc.legend(loc="best")
+
+    # Auto-scale y-axis
+    ymin, ymax = ax_arc.get_ylim()
+    padding = (ymax - ymin) * 0.1
+    ax_arc.set_ylim(ymin - padding, ymax + padding)
+
+    # --- Difference subplot: |LLM - Original| for each N ---
+    for label, (orig_interp, llm_interp) in arcs_for_diff.items():
+        x_diff = np.linspace(0, 100, len(orig_interp))
+        abs_diff = np.abs(llm_interp - orig_interp)
+        color = BON_COLORS.get(label, "grey")
+        ax_diff.fill_between(x_diff, 0, abs_diff, color=color, alpha=0.3, label=label)
+        ax_diff.plot(x_diff, abs_diff, color=color, linewidth=1.5)
+
+    ax_diff.set_xlabel("Narrative Progress (%)")
+    ax_diff.set_ylabel("|LLM − Original|")
+    ax_diff.set_title("Absolute Sentiment Deviation from Original")
+    ax_diff.axhline(0, color="grey", linewidth=0.5, linestyle="--")
+    ax_diff.legend(loc="best")
+
+    fig.tight_layout()
+    _save(fig, f"{slug}_{method}_bon_comparison")
+
+
+def plot_bon_summary_table(book: dict, method: str, n_values: list[int] | None = None) -> None:
+    """Generate a summary bar chart of per-chapter sentiment fidelity by N.
+
+    For each N value, computes mean |LLM_score - Original_score| across chapters
+    using the bon_metadata stored in the translation files.
+
+    Parameters
+    ----------
+    book : dict
+        A book entry from ``config.BOOKS``.
+    method : str
+        Sentiment method key.
+    n_values : list[int] or None
+        N values to compare. Defaults to [1, 5, 10].
+    """
+    from src.config import TRANSLATIONS_DIR
+
+    if n_values is None:
+        n_values = [1, 5, 10]
+
+    _apply_style()
+    slug = book["slug"]
+    title = book["title"]
+
+    mean_corrs: dict[str, float] = {}
+    mean_diffs: dict[str, float] = {}
+
+    for n_val in n_values:
+        if n_val == 1:
+            bon_path = TRANSLATIONS_DIR / f"{slug}_llm_n1.json"
+            if not bon_path.exists():
+                bon_path = TRANSLATIONS_DIR / f"{slug}_llm_bon1.json"
+        else:
+            bon_path = TRANSLATIONS_DIR / f"{slug}_llm_bon{n_val}.json"
+
+        if not bon_path.exists():
+            continue
+
+        with open(bon_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+
+        corrs = []
+        diffs = []
+        for ch in data.get("chapters", []):
+            if ch is None:
+                continue
+            meta = ch.get("bon_metadata", {})
+            if meta:
+                if "selected_correlation" in meta:
+                    corrs.append(meta["selected_correlation"])
+                if "selection_diff" in meta:
+                    diffs.append(meta["selection_diff"])
+
+        label = f"N={n_val}"
+        if corrs:
+            mean_corrs[label] = float(np.mean(corrs))
+        if diffs:
+            mean_diffs[label] = float(np.mean(diffs))
+
+    if not mean_corrs and not mean_diffs:
+        logger.info("No best-of-N data available for %s", slug)
+        return
+
+    # Use correlation if available, otherwise fall back to magnitude diff.
+    if mean_corrs:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        labels = list(mean_corrs.keys())
+        values = [mean_corrs[k] for k in labels]
+        colors = [BON_COLORS.get(k, "grey") for k in labels]
+
+        bars = ax.bar(labels, values, color=colors, edgecolor="black", linewidth=0.5)
+        for bar, val in zip(bars, values):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                    f"{val:.4f}", ha="center", va="bottom", fontsize=FONT_SIZE - 1)
+
+        ax.set_xlabel("Best-of-N Setting")
+        ax.set_ylabel("Mean Pearson Correlation with Original Arc")
+        ax.set_title(f"{title} \u2014 Shape Fidelity by N ({method})")
+        ax.set_ylim(0, 1.0)
+        fig.tight_layout()
+        _save(fig, f"{slug}_{method}_bon_fidelity")
+    else:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        labels = list(mean_diffs.keys())
+        values = [mean_diffs[k] for k in labels]
+        colors = [BON_COLORS.get(k, "grey") for k in labels]
+
+        bars = ax.bar(labels, values, color=colors, edgecolor="black", linewidth=0.5)
+        for bar, val in zip(bars, values):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.002,
+                    f"{val:.4f}", ha="center", va="bottom", fontsize=FONT_SIZE - 1)
+
+        ax.set_xlabel("Best-of-N Setting")
+        ax.set_ylabel("Mean |Selected Score \u2212 Original Score|")
+        ax.set_title(f"{title} \u2014 Sentiment Fidelity Gap by N ({method})")
+        ax.set_ylim(0, max(values) * 1.3 if values else 1)
+        fig.tight_layout()
+        _save(fig, f"{slug}_{method}_bon_fidelity")
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -439,6 +675,15 @@ def visualize_all(methods: list[str] | None = None) -> None:
                 plot_drift(book, method)
             except Exception:
                 logger.exception("Failed drift plot for %s / %s", book["slug"], method)
+            # Best-of-N comparison (only generates if bon data exists)
+            try:
+                plot_bon_comparison(book, method)
+            except Exception:
+                logger.exception("Failed bon comparison for %s / %s", book["slug"], method)
+            try:
+                plot_bon_summary_table(book, method)
+            except Exception:
+                logger.exception("Failed bon fidelity for %s / %s", book["slug"], method)
 
     # Cross-book plots (require results.json)
     try:

@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from src.download import download_gutenberg, download_all_books
 from src.chapter_split import split_book, validate_chapter_counts
-from src.translate import translate_book, translate_book_parallel
+from src.translate import translate_book, translate_book_parallel, translate_book_best_of_n
 from src.sentiment import (
     analyze_book, analyze_all_books,
     analyze_book_sliding_window, analyze_all_books_sliding_window,
@@ -131,19 +131,28 @@ def phase_translate(
     skip_llm: bool = False,
     force: bool = False,
     parallel: bool = False,
+    best_of_n: int | None = None,
 ) -> None:
     """Translate chapters via Vertex AI (Gemini)."""
     _phase_header("translate")
     if skip_llm:
         logger.info("--skip-llm-translate flag set; skipping translation phase")
         return
-    translate_fn = translate_book_parallel if parallel else translate_book
-    mode_label = "parallel" if parallel else "sequential"
-    try:
-        for book in tqdm(books, desc=f"Translating ({mode_label})"):
-            translate_fn(book, force=force)
-    except Exception:
-        logger.exception("Translate phase failed")
+    if best_of_n is not None and best_of_n > 1:
+        mode_label = f"best-of-{best_of_n}"
+        try:
+            for book in tqdm(books, desc=f"Translating ({mode_label})"):
+                translate_book_best_of_n(book, n=best_of_n, force=force)
+        except Exception:
+            logger.exception("Translate phase failed")
+    else:
+        translate_fn = translate_book_parallel if parallel else translate_book
+        mode_label = "parallel" if parallel else "sequential"
+        try:
+            for book in tqdm(books, desc=f"Translating ({mode_label})"):
+                translate_fn(book, force=force)
+        except Exception:
+            logger.exception("Translate phase failed")
 
 
 def phase_sentiment(
@@ -291,6 +300,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use parallel translation (concurrent API calls per book)",
     )
     parser.add_argument(
+        "--best-of-n",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Use best-of-N sentiment-guided reranking for translation (e.g. 5 or 10)",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Force re-computation even if outputs already exist",
@@ -321,7 +337,7 @@ def main() -> None:
 
     # ----- translate -----
     if run_all or args.phase == "translate":
-        phase_translate(books, skip_llm=args.skip_llm_translate, force=args.force, parallel=args.parallel)
+        phase_translate(books, skip_llm=args.skip_llm_translate, force=args.force, parallel=args.parallel, best_of_n=args.best_of_n)
 
     # ----- sentiment -----
     if run_all or args.phase == "sentiment":
