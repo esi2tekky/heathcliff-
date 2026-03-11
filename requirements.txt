@@ -7,6 +7,6 @@ nltk
 transformers
 torch
 sentencepiece
-anthropic
+anthropic[vertex]
 requests
 tqdm

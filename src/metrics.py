@@ -33,7 +33,7 @@ from src import config
 logger = logging.getLogger(__name__)
 
 # Sentinel list of known sentiment methods used across the pipeline.
-DEFAULT_METHODS = ["vader", "labmt", "xlm_roberta", "llm_judge"]
+DEFAULT_METHODS = ["vader", "labmt", "xlm_roberta", "llm_judge", "sw_xlm_roberta", "sw_labmt"]
 
 # Pair labels in consistent order.
 PAIR_LABELS = ("original_vs_human", "original_vs_llm", "human_vs_llm")

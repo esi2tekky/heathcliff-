@@ -38,9 +38,17 @@ METHOD_LANGUAGES: dict[str, set[str]] = {
     "labmt": {"fr"},
     "xlm_roberta": {"fr", "en"},
     "llm_judge": {"fr", "en"},
+    "sw_xlm_roberta": {"fr", "en"},
+    "sw_labmt": {"fr"},
 }
 
 ALL_METHODS = list(METHOD_LANGUAGES.keys())
+
+# Base method for each sliding-window variant.
+_SW_BASE_METHOD = {
+    "sw_xlm_roberta": "xlm_roberta",
+    "sw_labmt": "labmt",
+}
 
 # ---------------------------------------------------------------------------
 # Lazy-loaded globals
@@ -265,25 +273,21 @@ _LLM_JUDGE_PROMPT = (
 
 
 def _score_llm_judge(text: str) -> float:
-    """Score a single text using Claude as an LLM judge.
+    """Score a single text using Gemini as an LLM judge.
 
-    Sends the text to ``config.ANTHROPIC_MODEL_JUDGE`` and parses the
+    Sends the text to ``config.GEMINI_MODEL_JUDGE`` and parses the
     numeric response.  The raw [-10, 10] score is rescaled to [-1, 1].
     """
-    import anthropic
+    import vertexai
+    from vertexai.generative_models import GenerativeModel
 
-    client = anthropic.Anthropic()
-    message = client.messages.create(
-        model=config.ANTHROPIC_MODEL_JUDGE,
-        max_tokens=16,
-        messages=[
-            {
-                "role": "user",
-                "content": f"{_LLM_JUDGE_PROMPT}\n\n{text}",
-            },
-        ],
+    vertexai.init(project=config.GCP_PROJECT_ID, location=config.GCP_REGION)
+    model = GenerativeModel(config.GEMINI_MODEL_JUDGE)
+    response = model.generate_content(
+        f"{_LLM_JUDGE_PROMPT}\n\n{text}",
+        generation_config={"max_output_tokens": 16},
     )
-    raw_text = message.content[0].text.strip()
+    raw_text = response.text.strip()
     # Parse the numeric response, allowing decimals and negative signs.
     match = re.search(r"-?\d+(?:\.\d+)?", raw_text)
     if match is None:
@@ -449,8 +453,185 @@ def analyze_all_books(
 
 
 # ---------------------------------------------------------------------------
+# Sliding-window (Reagan et al.) analysis
+# ---------------------------------------------------------------------------
+
+def _load_full_text(book: dict, version: str) -> str:
+    """Load the complete text for a book+version as a single string.
+
+    - ``_original`` / ``_human`` versions: read from ``config.RAW_DIR/{gid}.txt``
+    - ``_llm`` versions: concatenate chapter texts from the translation JSON
+    """
+    slug = book["slug"]
+    if version.endswith("_llm"):
+        path = config.TRANSLATIONS_DIR / f"{slug}_llm.json"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"LLM translation not found: {path}"
+            )
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        chapters = data if isinstance(data, list) else data.get("chapters", [])
+        return "\n\n".join(ch.get("text", "") for ch in chapters if ch is not None)
+
+    # Original or human translation: load raw Gutenberg text.
+    lang = _version_language(version)
+    gid = book["en_id"] if lang == "en" else book["fr_ids"][0]
+    path = config.RAW_DIR / f"{gid}.txt"
+    if not path.exists():
+        raise FileNotFoundError(f"Raw text not found: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def analyze_book_sliding_window(
+    book: dict,
+    version: str,
+    method: str,
+    force: bool = False,
+) -> dict:
+    """Score a book using the Reagan et al. sliding-window approach.
+
+    Slides a window of ``config.SW_WINDOW_WORDS`` words across the full
+    text, producing ``config.SW_N_POINTS`` evenly-spaced sentiment scores.
+
+    Parameters
+    ----------
+    book:
+        Book dict from ``config.BOOKS``.
+    version:
+        Version label (e.g. ``'en_original'``, ``'fr_human'``, ``'fr_llm'``).
+    method:
+        Base sentiment method (``'xlm_roberta'`` or ``'labmt'``).
+    force:
+        If True, re-run even if cached output exists.
+
+    Returns
+    -------
+    dict
+        Contains keys: title, version, method, scores, n_windows, etc.
+    """
+    from tqdm import tqdm
+
+    slug = book["slug"]
+    sw_method = f"sw_{method}"
+    output_path = config.PROCESSED_DIR / f"{slug}_{version}_{sw_method}.json"
+
+    if output_path.exists() and not force:
+        logger.info("Cached sliding-window result found, skipping: %s", output_path)
+        with open(output_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    lang = _version_language(version)
+    if lang not in METHOD_LANGUAGES.get(sw_method, set()):
+        raise ValueError(
+            f"Sliding-window method {sw_method!r} does not support "
+            f"language {lang!r} (version={version!r})."
+        )
+
+    score_fn = _SCORE_FUNCTIONS[method]
+    full_text = _load_full_text(book, version)
+    words = full_text.split()
+    N = len(words)
+    W = config.SW_WINDOW_WORDS
+    n = config.SW_N_POINTS
+
+    logger.info(
+        "Sliding window: %s / %s / %s — %d words, W=%d, n=%d",
+        slug, version, sw_method, N, W, n,
+    )
+
+    scores: list[float] = []
+
+    if N <= W:
+        # Book shorter than one window — score the entire text once.
+        logger.warning(
+            "Text has %d words (< window %d); scoring full text as single window.",
+            N, W,
+        )
+        single_score = score_fn(full_text)
+        scores = [single_score] * n
+    else:
+        gap = (N - W) / n
+        for i in tqdm(range(n), desc=f"{slug}/{version}/{sw_method}"):
+            start = int(round(i * gap))
+            end = start + W
+            window_text = " ".join(words[start:end])
+            score = score_fn(window_text)
+            scores.append(score)
+
+            if method == "llm_judge":
+                time.sleep(config.RATE_LIMIT_DELAY)
+
+    result = {
+        "title": book["title"],
+        "version": version,
+        "method": sw_method,
+        "scores": scores,
+        "n_chapters": n,
+        "n_windows": n,
+        "window_words": W,
+        "total_words": N,
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+    logger.info("Saved sliding-window results to %s", output_path)
+
+    return result
+
+
+def analyze_all_books_sliding_window(
+    methods: list[str] | None = None,
+    force: bool = False,
+) -> list[dict]:
+    """Run sliding-window analysis across all books, versions, and methods.
+
+    Parameters
+    ----------
+    methods:
+        Base method names (e.g. ``['xlm_roberta', 'labmt']``).
+        Defaults to ``['xlm_roberta', 'labmt']``.
+    force:
+        If True, re-run even when cached output exists.
+    """
+    if methods is None:
+        methods = ["xlm_roberta", "labmt"]
+
+    results: list[dict] = []
+
+    for book in config.BOOKS:
+        versions = config.get_versions(book)
+        for version in versions:
+            lang = _version_language(version)
+            for method in methods:
+                sw_method = f"sw_{method}"
+                if lang not in METHOD_LANGUAGES.get(sw_method, set()):
+                    continue
+                try:
+                    result = analyze_book_sliding_window(
+                        book, version, method, force=force,
+                    )
+                    results.append(result)
+                except FileNotFoundError as exc:
+                    logger.warning("Skipping: %s", exc)
+                except Exception:
+                    logger.exception(
+                        "Error in sliding-window analysis: %s / %s / %s",
+                        book["title"], version, sw_method,
+                    )
+
+    logger.info("Completed %d sliding-window analyses.", len(results))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # CLI entry-point
 # ---------------------------------------------------------------------------
+
+_CHAPTER_METHODS = ["vader", "labmt", "xlm_roberta", "llm_judge"]
+_SW_METHODS = ["xlm_roberta", "labmt"]
+
 
 def main(argv: list[str] | None = None) -> None:
     """Command-line interface for running sentiment analysis.
@@ -459,6 +640,7 @@ def main(argv: list[str] | None = None) -> None:
 
         python -m src.sentiment --all --methods vader xlm_roberta
         python -m src.sentiment --book candide --methods labmt --force
+        python -m src.sentiment --book wuthering_heights --sliding-window --methods xlm_roberta
     """
     parser = argparse.ArgumentParser(
         description="Run multi-method sentiment analysis on the corpus.",
@@ -478,13 +660,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--methods",
         nargs="+",
-        choices=ALL_METHODS,
-        default=ALL_METHODS,
+        default=_CHAPTER_METHODS,
         metavar="METHOD",
         help=(
-            f"Sentiment methods to run. Choices: {', '.join(ALL_METHODS)}. "
-            "Defaults to all."
+            f"Sentiment methods to run. Choices: {', '.join(_CHAPTER_METHODS)}. "
+            "Defaults to all chapter-level methods."
         ),
+    )
+    parser.add_argument(
+        "--sliding-window",
+        action="store_true",
+        dest="sliding_window",
+        help="Also run Reagan et al. sliding-window analysis (sw_xlm_roberta, sw_labmt).",
     )
     parser.add_argument(
         "--force",
@@ -501,6 +688,7 @@ def main(argv: list[str] | None = None) -> None:
     if not args.book and not args.analyze_all:
         parser.error("Provide --book TITLE_OR_SLUG or --all.")
 
+    # --- Chapter-level analysis ---
     if args.analyze_all:
         analyze_all_books(methods=args.methods, force=args.force)
     else:
@@ -509,6 +697,8 @@ def main(argv: list[str] | None = None) -> None:
         for version in versions:
             lang = _version_language(version)
             for method in args.methods:
+                if method not in METHOD_LANGUAGES:
+                    continue
                 if lang not in METHOD_LANGUAGES[method]:
                     logger.info(
                         "Skipping %s/%s/%s (language mismatch)",
@@ -524,6 +714,34 @@ def main(argv: list[str] | None = None) -> None:
                         "Error analysing %s / %s / %s",
                         book["title"], version, method,
                     )
+
+    # --- Sliding-window analysis ---
+    if args.sliding_window:
+        sw_base = [m for m in args.methods if m in _SW_METHODS]
+        if not sw_base:
+            sw_base = _SW_METHODS
+        if args.analyze_all:
+            analyze_all_books_sliding_window(methods=sw_base, force=args.force)
+        else:
+            book = config.get_book(args.book)
+            versions = config.get_versions(book)
+            for version in versions:
+                lang = _version_language(version)
+                for method in sw_base:
+                    sw_method = f"sw_{method}"
+                    if lang not in METHOD_LANGUAGES.get(sw_method, set()):
+                        continue
+                    try:
+                        analyze_book_sliding_window(
+                            book, version, method, force=args.force,
+                        )
+                    except FileNotFoundError as exc:
+                        logger.warning("Skipping: %s", exc)
+                    except Exception:
+                        logger.exception(
+                            "Error in sliding-window: %s / %s / %s",
+                            book["title"], version, sw_method,
+                        )
 
 
 if __name__ == "__main__":

@@ -15,9 +15,13 @@ from tqdm import tqdm
 from src.download import download_gutenberg, download_all_books
 from src.chapter_split import split_book, validate_chapter_counts
 from src.translate import translate_book
-from src.sentiment import analyze_book, analyze_all_books
+from src.sentiment import (
+    analyze_book, analyze_all_books,
+    analyze_book_sliding_window, analyze_all_books_sliding_window,
+)
 from src.metrics import compute_all_book_metrics, save_results_json, save_results_csv
 from src.visualize import visualize_all
+from src.qualitative import analyze_all_books_qualitative, generate_qualitative_report, save_qualitative_json, save_qualitative_markdown
 from src import config
 
 logger = logging.getLogger(__name__)
@@ -28,7 +32,7 @@ logging.basicConfig(
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
-PHASE_ORDER = ["download", "split", "translate", "sentiment", "metrics", "visualize"]
+PHASE_ORDER = ["download", "split", "translate", "sentiment", "metrics", "qualitative", "visualize"]
 
 
 def _phase_header(name: str) -> None:
@@ -127,12 +131,6 @@ def phase_translate(books: list[dict], *, skip_llm: bool = False, force: bool = 
     if skip_llm:
         logger.info("--skip-llm-translate flag set; skipping translation phase")
         return
-    # Fail-fast: require API key before doing any work
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        logger.error(
-            "ANTHROPIC_API_KEY is not set. Export it or pass --skip-llm-translate."
-        )
-        return
     try:
         for book in tqdm(books, desc="Translating"):
             translate_book(book, force=force)
@@ -144,21 +142,26 @@ def phase_sentiment(
     books: list[dict],
     *,
     methods: list[str],
+    sliding_window: bool = True,
     force: bool = False,
 ) -> None:
     """Run sentiment analysis on all chapter versions."""
     _phase_header("sentiment")
+
+    from src.sentiment import METHOD_LANGUAGES, _version_language
+
+    # --- Chapter-level analysis ---
     try:
         if len(books) == len(config.BOOKS):
             analyze_all_books(methods=methods, force=force)
         else:
-            # analyze_book expects (book, version, method) — iterate explicitly
-            from src.sentiment import METHOD_LANGUAGES, _version_language
-            for book in tqdm(books, desc="Sentiment"):
+            for book in tqdm(books, desc="Sentiment (chapter)"):
                 versions = config.get_versions(book)
                 for version in versions:
                     lang = _version_language(version)
                     for method in methods:
+                        if method not in METHOD_LANGUAGES:
+                            continue
                         if lang not in METHOD_LANGUAGES[method]:
                             continue
                         try:
@@ -166,7 +169,34 @@ def phase_sentiment(
                         except FileNotFoundError as exc:
                             logger.warning("Skipping: %s", exc)
     except Exception:
-        logger.exception("Sentiment phase failed")
+        logger.exception("Chapter-level sentiment phase failed")
+
+    # --- Sliding-window analysis ---
+    if sliding_window:
+        _phase_header("sentiment (sliding window)")
+        sw_base = [m for m in methods if m in ("xlm_roberta", "labmt")]
+        if not sw_base:
+            sw_base = ["xlm_roberta", "labmt"]
+        try:
+            if len(books) == len(config.BOOKS):
+                analyze_all_books_sliding_window(methods=sw_base, force=force)
+            else:
+                for book in tqdm(books, desc="Sentiment (sliding window)"):
+                    versions = config.get_versions(book)
+                    for version in versions:
+                        lang = _version_language(version)
+                        for method in sw_base:
+                            sw_method = f"sw_{method}"
+                            if lang not in METHOD_LANGUAGES.get(sw_method, set()):
+                                continue
+                            try:
+                                analyze_book_sliding_window(
+                                    book, version, method, force=force,
+                                )
+                            except FileNotFoundError as exc:
+                                logger.warning("Skipping: %s", exc)
+        except Exception:
+            logger.exception("Sliding-window sentiment phase failed")
 
 
 def phase_metrics(methods: list[str]) -> None:
@@ -181,6 +211,27 @@ def phase_metrics(methods: list[str]) -> None:
             logger.warning("No metrics results produced")
     except Exception:
         logger.exception("Metrics phase failed")
+
+
+def phase_qualitative(books: list[dict], methods: list[str]) -> None:
+    """Run qualitative divergence analysis."""
+    _phase_header("qualitative")
+    # Default to sliding-window methods for qualitative analysis.
+    qual_methods = [m for m in methods if m.startswith("sw_")]
+    if not qual_methods:
+        qual_methods = ["sw_xlm_roberta"]
+    try:
+        if len(books) == len(config.BOOKS):
+            analyze_all_books_qualitative(methods=qual_methods)
+        else:
+            for book in books:
+                for method in qual_methods:
+                    report = generate_qualitative_report(book, method)
+                    if report.get("pairs"):
+                        save_qualitative_json(report, book, method)
+                        save_qualitative_markdown(report, book, method)
+    except Exception:
+        logger.exception("Qualitative phase failed")
 
 
 def phase_visualize(methods: list[str]) -> None:
@@ -222,6 +273,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sentiment methods to use (default: vader labmt xlm_roberta)",
     )
     parser.add_argument(
+        "--no-sliding-window",
+        action="store_true",
+        help="Skip the Reagan et al. sliding-window sentiment analysis",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Force re-computation even if outputs already exist",
@@ -256,15 +312,33 @@ def main() -> None:
 
     # ----- sentiment -----
     if run_all or args.phase == "sentiment":
-        phase_sentiment(books, methods=args.sentiment_methods, force=args.force)
+        phase_sentiment(
+            books,
+            methods=args.sentiment_methods,
+            sliding_window=not args.no_sliding_window,
+            force=args.force,
+        )
+
+    # Build the full methods list (chapter + sliding window) for downstream phases.
+    all_methods = list(args.sentiment_methods)
+    if not args.no_sliding_window:
+        for m in args.sentiment_methods:
+            if m in ("xlm_roberta", "labmt"):
+                sw = f"sw_{m}"
+                if sw not in all_methods:
+                    all_methods.append(sw)
 
     # ----- metrics -----
     if run_all or args.phase == "metrics":
-        phase_metrics(methods=args.sentiment_methods)
+        phase_metrics(methods=all_methods)
+
+    # ----- qualitative -----
+    if run_all or args.phase == "qualitative":
+        phase_qualitative(books, methods=all_methods)
 
     # ----- visualize -----
     if run_all or args.phase == "visualize":
-        phase_visualize(methods=args.sentiment_methods)
+        phase_visualize(methods=all_methods)
 
     print("\nPipeline complete.")
 

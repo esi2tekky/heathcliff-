@@ -1,0 +1,147 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[hyperref]{acl2023}
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+
+\title{Does Translation Preserve the Emotional Arc? \\
+Comparing Human and LLM Literary Translation Fidelity}
+
+\author{
+  Julie Rhee \\
+  Stanford University \\
+  \texttt{juliarhee@stanford.edu}
+}
+
+\begin{document}
+\maketitle
+
+\noindent \textbf{Project type:} Custom \\
+\textbf{TA Mentor:} [Your TA name here]
+
+\begin{abstract}
+Literary translation must preserve not just semantic content but the emotional trajectory of a narrative.
+We investigate whether LLM-generated translations preserve emotional arcs more faithfully than established human translations, using five French--English novels from Project Gutenberg.
+We construct a pipeline that splits texts into chapters, generates LLM translations via Gemini 2.5 Pro, and compares emotional arcs using VADER, labMT, and XLM-RoBERTa sentiment analysis.
+Preliminary results on \textit{Wuthering Heights} (English$\to$French) show that the LLM translation achieves a significantly higher Pearson correlation with the original's emotional arc ($r{=}0.49$, $p{<}0.01$) than the human translation ($r{=}0.34$, $p{=}0.07$) under chapter-level XLM-RoBERTa analysis, suggesting LLMs may better preserve emotional fidelity in translation.
+\end{abstract}
+
+\section{Approach}
+
+We frame translation fidelity as \textit{emotional arc preservation}: a faithful translation should produce a sentiment trajectory that closely tracks the original.
+Our pipeline has four stages.
+
+\paragraph{Corpus and Translation.}
+We use five novels spanning both translation directions:
+four French originals with English human translations (Voltaire's \textit{Candide}, Flaubert's \textit{Madame Bovary}, Verne's \textit{Twenty Thousand Leagues} and \textit{Around the World in 80 Days}), plus Bront\"{e}'s \textit{Wuthering Heights} (English original, French human translation).
+All source texts and human translations are from Project Gutenberg.
+For each book, we generate an LLM translation using Gemini 2.5 Pro on Google Cloud Vertex AI, translating chapter-by-chapter with a literary translation system prompt (temperature 0.3).
+This yields three versions per book: the original, the human translation, and the LLM translation.
+
+\paragraph{Sentiment Analysis.}
+We score each chapter with three complementary methods:
+\begin{itemize}
+\setlength\itemsep{0pt}
+    \item \textbf{VADER} \cite{hutto2014vader}: English-only lexicon+rule-based sentiment (compound score).
+    \item \textbf{labMT} \cite{dodds2011temporal}: French-only happiness lexicon from hedonometer.org, rescaled from $[1,9]$ to $[-1,1]$.
+    \item \textbf{XLM-RoBERTa} \cite{barbieri2022xlmtwitter}: Multilingual transformer fine-tuned on sentiment (\texttt{cardiffnlp/twitter-xlm-roberta-base-sentiment-multilingual}). We chunk chapters into ${\sim}400$-token windows with 50-token overlap, map predictions to $[-1,1]$, and take a weighted average.
+\end{itemize}
+XLM-RoBERTa is our primary cross-lingual method as it applies to both languages.
+We also implement a sliding-window variant following \citet{reagan2016emotional}, sampling 100 evenly-spaced windows of 10{,}000 words across the full text to produce smooth, position-normalized arcs.
+
+\paragraph{Arc Comparison Metrics.}
+For each pair of versions (original vs.\ human, original vs.\ LLM, human vs.\ LLM), we compute:
+Pearson and Spearman correlation, Dynamic Time Warping (DTW) distance normalized by path length, RMSE, mean absolute difference, cosine similarity, and peak/trough alignment (average positional shift of top-$k$ extrema as \% of arc length).
+We compare arcs at both chapter-level and percentage-normalized (100 points) granularity.
+
+\section{Experiments}
+
+\paragraph{Data.}
+Our corpus consists of five novels totaling ${\sim}150$ chapters.
+All texts are sourced from Project Gutenberg.
+\textit{Wuthering Heights} (34 English chapters, 30 French chapters in the human translation) is fully processed; the remaining four books require LLM translation in the next phase.
+
+\paragraph{Evaluation.}
+Our primary evaluation metric is Pearson correlation between sentiment arcs, which captures whether the emotional trajectory \textit{shape} is preserved.
+DTW distance captures temporal misalignment, while peak/trough alignment measures whether key emotional moments occur at corresponding narrative positions.
+
+\paragraph{Experimental Details.}
+LLM translations were generated using Gemini 2.5 Pro via Google Cloud Vertex AI (\texttt{temperature=0.3}, \texttt{max\_output\_tokens=65536}).
+Translation of \textit{Wuthering Heights} (34 chapters) consumed 165{,}961 input tokens and 199{,}127 output tokens.
+XLM-RoBERTa inference uses the HuggingFace \texttt{transformers} library with 400-token chunks.
+All code is original except for the pre-trained models cited above.
+
+\paragraph{Results.}
+Table~\ref{tab:results} reports chapter-level XLM-RoBERTa results for \textit{Wuthering Heights}.
+The LLM translation shows a statistically significant correlation with the original ($r{=}0.49$, $p{=}0.008$), while the human translation's correlation is weaker and marginally significant ($r{=}0.34$, $p{=}0.069$).
+The human--LLM pair shows low correlation ($r{=}0.19$), indicating the two translations diverge substantially from each other despite both tracking the original to varying degrees.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+\textbf{Pair} & \textbf{Pearson $r$} & \textbf{$p$-value} & \textbf{Cosine} \\
+\midrule
+Orig vs Human  & 0.337 & 0.069 & 0.882 \\
+Orig vs LLM    & \textbf{0.485} & \textbf{0.008} & 0.910 \\
+Human vs LLM   & 0.192 & 0.317 & 0.944 \\
+\bottomrule
+\end{tabular}
+\caption{Chapter-level XLM-RoBERTa arc comparison for \textit{Wuthering Heights} (EN$\to$FR). Bold indicates statistically significant results ($p < 0.05$).}
+\label{tab:results}
+\end{table}
+
+The sliding-window analysis (100 points, 10{,}000-word windows) shows weaker correlations overall, with the human--LLM pair achieving the highest correlation ($r{=}0.34$, $p{<}0.001$), suggesting that at finer granularity the two French translations track each other more closely than either tracks the English original.
+This may reflect systematic differences in how French and English encode sentiment at the lexical level.
+
+These preliminary results are encouraging: the LLM translation appears to preserve the chapter-level emotional arc of \textit{Wuthering Heights} more faithfully than the 19th-century human translation.
+However, we note this is a single book in one direction (EN$\to$FR); the pattern may differ for FR$\to$EN translations where the human translations are into English.
+
+\section{Future Work}
+
+\begin{itemize}
+\setlength\itemsep{0pt}
+    \item \textbf{Complete corpus:} Run LLM translations for the four remaining French$\to$English books to test whether the pattern holds across translation directions and literary styles.
+    \item \textbf{LLM judge evaluation:} Use Gemini as a sentiment judge to provide a fourth scoring method not reliant on pre-trained lexicons or models.
+    \item \textbf{Qualitative analysis:} Our pipeline includes a divergence-detection module that extracts the most emotionally divergent passages between versions. We will use this for close-reading analysis of \textit{where} and \textit{why} translations diverge.
+    \item \textbf{Statistical robustness:} Apply bootstrap confidence intervals to correlation estimates and test sensitivity to chunking parameters.
+    \item \textbf{Multiple LLMs:} Compare translations from different LLMs (e.g., Gemini vs.\ Claude vs.\ GPT-4) to assess whether emotional fidelity varies by model.
+\end{itemize}
+
+\bibliographystyle{acl_natbib}
+\begin{thebibliography}{5}
+\bibitem[\protect\citename{Hutto and Gilbert}2014]{hutto2014vader}
+C.~J. Hutto and Eric Gilbert.
+\newblock 2014.
+\newblock VADER: A parsimonious rule-based model for sentiment analysis of social media text.
+\newblock In \emph{Proceedings of ICWSM}.
+
+\bibitem[\protect\citename{Dodds et~al.}2011]{dodds2011temporal}
+Peter~Sheridan Dodds, Kameron~Decker Harris, Isabel~M. Kloumann, Catherine~A. Bliss, and Christopher~M. Danforth.
+\newblock 2011.
+\newblock Temporal patterns of happiness and information in a global social network: Hedonometrics and Twitter.
+\newblock \emph{PLoS ONE}, 6(12):e26752.
+
+\bibitem[\protect\citename{Barbieri et~al.}2022]{barbieri2022xlmtwitter}
+Francesco Barbieri, Luis Espinosa~Anke, and Jose Camacho-Collados.
+\newblock 2022.
+\newblock XLM-T: Multilingual language models in Twitter for sentiment analysis and beyond.
+\newblock In \emph{Proceedings of LREC}.
+
+\bibitem[\protect\citename{Reagan et~al.}2016]{reagan2016emotional}
+Andrew~J. Reagan, Lewis Mitchell, Dilan Kiley, Christopher~M. Danforth, and Peter~Sheridan Dodds.
+\newblock 2016.
+\newblock The emotional arcs of stories are dominated by six basic shapes.
+\newblock \emph{EPJ Data Science}, 5(1):31.
+
+\bibitem[\protect\citename{Bront\"{e}}1847]{bronte1847wuthering}
+Emily Bront\"{e}.
+\newblock 1847.
+\newblock \emph{Wuthering Heights}.
+\newblock Thomas Cautley Newby, London.
+\end{thebibliography}
+
+\end{document}

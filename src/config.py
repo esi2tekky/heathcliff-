@@ -65,12 +65,14 @@ BOOKS = [
 ]
 
 # ---------------------------------------------------------------------------
-# API configuration
+# API configuration (Vertex AI / Gemini)
 # ---------------------------------------------------------------------------
-ANTHROPIC_MODEL_TRANSLATE = "claude-sonnet-4-20250514"
-ANTHROPIC_MODEL_JUDGE = "claude-haiku-4-5-20250929"
+GCP_PROJECT_ID = "cs224n-488022"
+GCP_REGION = "us-central1"
+GEMINI_MODEL_TRANSLATE = "gemini-2.5-pro"
+GEMINI_MODEL_JUDGE = "gemini-2.0-flash"
 TRANSLATE_TEMPERATURE = 0.3
-TRANSLATE_MAX_TOKENS = 4096
+TRANSLATE_MAX_TOKENS = 65536
 RATE_LIMIT_DELAY = 1.0  # seconds between API calls
 
 # ---------------------------------------------------------------------------
@@ -81,6 +83,10 @@ XLM_CHUNK_TOKENS = 400
 XLM_OVERLAP_TOKENS = 50
 LABMT_API_URL = "https://hedonometer.org/api/v1/words/?format=json&wordlist__title=labMT-fr-v2"
 LABMT_CACHE_PATH = DATA_DIR / "labmt_fr.json"
+
+# Sliding-window (Reagan et al.) configuration
+SW_WINDOW_WORDS = 10_000    # W = 10,000 words per window
+SW_N_POINTS = 100           # n = 100 evenly-spaced sample points
 
 # ---------------------------------------------------------------------------
 # Smoothing / metrics configuration

@@ -148,17 +148,17 @@ def plot_arc_overlay(book: dict, method: str) -> None:
             logger.warning("Missing scores for %s / %s / %s -- skipping", slug, version_label, method)
             continue
 
-        chapters = np.arange(1, len(raw) + 1)
+        x = np.linspace(0, 100, len(raw))
         smoothed = _smooth(raw)
         color = VERSION_COLORS[role]
         label = VERSION_LABELS[role]
 
         # Faint raw line
-        ax.plot(chapters, raw, color=color, alpha=0.2, linewidth=1)
+        ax.plot(x, raw, color=color, alpha=0.2, linewidth=1)
         # Solid smoothed arc
-        ax.plot(chapters, smoothed, color=color, alpha=1.0, linewidth=2, label=label)
+        ax.plot(x, smoothed, color=color, alpha=1.0, linewidth=2, label=label)
 
-    ax.set_xlabel("Chapter Number")
+    ax.set_xlabel("Narrative Progress (%)")
     ax.set_ylabel("Sentiment Score")
     ax.set_ylim(-1, 1)
     ax.set_title(f"{title} \u2014 Emotional Arc ({method})")
@@ -200,23 +200,23 @@ def plot_drift(book: dict, method: str) -> None:
     human = np.asarray(human_scores[:min_len])
     llm = np.asarray(llm_scores[:min_len])
 
-    chapters = np.arange(1, min_len + 1)
+    x = np.linspace(0, 100, min_len)
     human_drift = human - orig
     llm_drift = llm - orig
 
     fig, ax = plt.subplots(figsize=(12, 5))
     ax.fill_between(
-        chapters, 0, human_drift,
+        x, 0, human_drift,
         color=VERSION_COLORS["human_translation"], alpha=0.4,
         label="Human Translation \u2212 Original",
     )
     ax.fill_between(
-        chapters, 0, llm_drift,
+        x, 0, llm_drift,
         color=VERSION_COLORS["LLM_translation"], alpha=0.4,
         label="LLM Translation \u2212 Original",
     )
     ax.axhline(0, color="grey", linewidth=0.8, linestyle="--")
-    ax.set_xlabel("Chapter Number")
+    ax.set_xlabel("Narrative Progress (%)")
     ax.set_ylabel("Sentiment Difference from Original")
     ax.set_title(f"{title} \u2014 Sentiment Drift ({method})")
     ax.legend(loc="best")
@@ -453,15 +453,23 @@ def visualize_all(methods: list[str] | None = None) -> None:
 
 
 def _detect_methods() -> list[str]:
-    """Detect available sentiment methods from processed files."""
+    """Detect available sentiment methods from processed files.
+
+    Reads the ``"method"`` key from each JSON file to support multi-part
+    method names like ``sw_xlm_roberta``.
+    """
     methods: set[str] = set()
     if not PROCESSED_DIR.exists():
         return []
     for path in PROCESSED_DIR.glob("*.json"):
-        # Filename pattern: {slug}_{version}_{method}.json
-        parts = path.stem.rsplit("_", 1)
-        if len(parts) == 2:
-            methods.add(parts[1])
+        # Skip chapter-split files (they have a "chapters" key, not "method").
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict) and "method" in data:
+                methods.add(data["method"])
+        except (json.JSONDecodeError, OSError):
+            continue
     return sorted(methods)
 
 

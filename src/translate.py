@@ -1,4 +1,4 @@
-"""LLM translation of chapter-split texts via Anthropic API.
+"""LLM translation of chapter-split texts via Vertex AI (Gemini).
 
 Translates each chapter individually, with checkpoint/resume support.
 Saves progress after every chapter so interrupted runs can continue.
@@ -7,12 +7,11 @@ Saves progress after every chapter so interrupted runs can continue.
 import argparse
 import json
 import logging
-import os
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
-import anthropic
+import vertexai
+from vertexai.generative_models import GenerativeModel
 
 from src import config
 
@@ -51,26 +50,27 @@ def _system_prompt(book: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def _translate_chapter(
-    client: anthropic.Anthropic,
+    model: GenerativeModel,
     text: str,
     system_prompt: str,
 ) -> dict:
-    """Translate a single chapter via the Anthropic API.
+    """Translate a single chapter via Vertex AI Gemini.
 
     Returns a dict with keys: translated_text, input_tokens, output_tokens.
     """
-    message = client.messages.create(
-        model=config.ANTHROPIC_MODEL_TRANSLATE,
-        max_tokens=config.TRANSLATE_MAX_TOKENS,
-        temperature=config.TRANSLATE_TEMPERATURE,
-        system=system_prompt,
-        messages=[{"role": "user", "content": text}],
+    response = model.generate_content(
+        f"{system_prompt}\n\n{text}",
+        generation_config={
+            "temperature": config.TRANSLATE_TEMPERATURE,
+            "max_output_tokens": config.TRANSLATE_MAX_TOKENS,
+        },
     )
-    translated_text = message.content[0].text
+    translated_text = response.text
+    usage = response.usage_metadata
     return {
         "translated_text": translated_text,
-        "input_tokens": message.usage.input_tokens,
-        "output_tokens": message.usage.output_tokens,
+        "input_tokens": usage.prompt_token_count,
+        "output_tokens": usage.candidates_token_count,
     }
 
 
@@ -131,7 +131,7 @@ def translate_book(book: dict, force: bool = False) -> dict:
             "language": trans_lang,
             "source_language": orig_lang,
             "direction": book["direction"],
-            "model": config.ANTHROPIC_MODEL_TRANSLATE,
+            "model": config.GEMINI_MODEL_TRANSLATE,
             "n_chapters": n_chapters,
             "chapters": [None] * n_chapters,
             "metadata": {
@@ -143,7 +143,8 @@ def translate_book(book: dict, force: bool = False) -> dict:
 
     # ----- Translate chapter by chapter ------------------------------------
     system_prompt = _system_prompt(book)
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    vertexai.init(project=config.GCP_PROJECT_ID, location=config.GCP_REGION)
+    model = GenerativeModel(config.GEMINI_MODEL_TRANSLATE)
 
     for i, src_chapter in enumerate(source_chapters):
         # Skip already-translated chapters (checkpoint resume)
@@ -156,7 +157,7 @@ def translate_book(book: dict, force: bool = False) -> dict:
             book["title"], i + 1, n_chapters,
         )
 
-        api_result = _translate_chapter(client, src_chapter["text"], system_prompt)
+        api_result = _translate_chapter(model, src_chapter["text"], system_prompt)
 
         translated_text = api_result["translated_text"]
         result["chapters"][i] = {
@@ -271,7 +272,7 @@ def _dry_run_book(book: dict, force: bool = False) -> None:
     print(f"  Chapters: {n_chapters} total, {already_done} already done, "
           f"{remaining} remaining")
     print(f"  Source characters: {total_chars:,}")
-    print(f"  Model: {config.ANTHROPIC_MODEL_TRANSLATE}")
+    print(f"  Model: {config.GEMINI_MODEL_TRANSLATE}")
     print(f"  Temperature: {config.TRANSLATE_TEMPERATURE}")
     print(f"  Max tokens: {config.TRANSLATE_MAX_TOKENS}")
 
@@ -291,7 +292,7 @@ def _dry_run_book(book: dict, force: bool = False) -> None:
 def main():
     """Command-line interface for translation."""
     parser = argparse.ArgumentParser(
-        description="Translate chapter-split texts via the Anthropic API."
+        description="Translate chapter-split texts via Vertex AI (Gemini)."
     )
     parser.add_argument(
         "--book",

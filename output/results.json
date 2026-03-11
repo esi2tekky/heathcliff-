@@ -1,0 +1,164 @@
+{
+  "wuthering_heights": {
+    "xlm_roberta": {
+      "original_vs_human": {
+        "chapter": {
+          "pearson_r": 0.33680617137015145,
+          "pearson_p": 0.06876408086931088,
+          "spearman_rho": 0.3939933259176863,
+          "spearman_p": 0.031217284005283043,
+          "dtw_distance": 0.19631402009049373,
+          "rmse": 0.36078919360702694,
+          "mean_abs_diff": 0.3246532695967686,
+          "cosine_similarity": 0.8817838264462031,
+          "peak_alignment": 0.17777777777777778,
+          "trough_alignment": 0.14444444444444443
+        },
+        "pct_normalized": {
+          "pearson_r": -0.0792450919690082,
+          "pearson_p": 0.4332035758430604,
+          "spearman_rho": -0.002688268826882688,
+          "spearman_p": 0.978822840587512,
+          "dtw_distance": 0.14218690757661653,
+          "rmse": 0.3679994837736003,
+          "mean_abs_diff": 0.32769781218044874,
+          "cosine_similarity": 0.8631269395967331,
+          "peak_alignment": 0.07666666666666667,
+          "trough_alignment": 0.11
+        }
+      },
+      "original_vs_llm": {
+        "chapter": {
+          "pearson_r": 0.48543121698225344,
+          "pearson_p": 0.007600053516402153,
+          "spearman_rho": 0.43940886699507375,
+          "spearman_p": 0.017081352410855153,
+          "dtw_distance": 0.3620292932147407,
+          "rmse": 0.5040942875690176,
+          "mean_abs_diff": 0.48781410238010703,
+          "cosine_similarity": 0.909556599100556,
+          "peak_alignment": 0.1839080459770115,
+          "trough_alignment": 0.10344827586206896
+        },
+        "pct_normalized": {
+          "pearson_r": 0.1353359421178128,
+          "pearson_p": 0.17942422044736958,
+          "spearman_rho": 0.07606360636063604,
+          "spearman_p": 0.45195268841897107,
+          "dtw_distance": 0.23994991454150044,
+          "rmse": 0.5130415318955346,
+          "mean_abs_diff": 0.48958941901661535,
+          "cosine_similarity": 0.8925560750438233,
+          "peak_alignment": 0.04666666666666667,
+          "trough_alignment": 0.06
+        }
+      },
+      "human_vs_llm": {
+        "chapter": {
+          "pearson_r": 0.19240965903540036,
+          "pearson_p": 0.31732803981507485,
+          "spearman_rho": 0.3300492610837438,
+          "spearman_p": 0.08036632698792502,
+          "dtw_distance": 0.11557724118611874,
+          "rmse": 0.2714922039791385,
+          "mean_abs_diff": 0.21940835518064813,
+          "cosine_similarity": 0.9436080559455745,
+          "peak_alignment": 0.08045977011494253,
+          "trough_alignment": 0.09195402298850575
+        },
+        "pct_normalized": {
+          "pearson_r": -0.0513410706080227,
+          "pearson_p": 0.6119509181950842,
+          "spearman_rho": 0.07719171917191718,
+          "spearman_p": 0.4452533536893094,
+          "dtw_distance": 0.07516033171782542,
+          "rmse": 0.2657340464050126,
+          "mean_abs_diff": 0.2181324132723255,
+          "cosine_similarity": 0.9461705804132923,
+          "peak_alignment": 0.06,
+          "trough_alignment": 0.07666666666666667
+        }
+      }
+    },
+    "sw_xlm_roberta": {
+      "original_vs_human": {
+        "chapter": {
+          "pearson_r": -0.018862163103475986,
+          "pearson_p": 0.852235584453603,
+          "spearman_rho": 0.014857485748574857,
+          "spearman_p": 0.8833569898731064,
+          "dtw_distance": 0.28209790283410136,
+          "rmse": 0.3547813756337431,
+          "mean_abs_diff": 0.3360983873116212,
+          "cosine_similarity": 0.947498516670333,
+          "peak_alignment": 0.04666666666666667,
+          "trough_alignment": 0.1366666666666667
+        },
+        "pct_normalized": {
+          "pearson_r": -0.018862163103475986,
+          "pearson_p": 0.852235584453603,
+          "spearman_rho": 0.014857485748574857,
+          "spearman_p": 0.8833569898731064,
+          "dtw_distance": 0.28209790283410136,
+          "rmse": 0.3547813756337431,
+          "mean_abs_diff": 0.3360983873116212,
+          "cosine_similarity": 0.947498516670333,
+          "peak_alignment": 0.04666666666666667,
+          "trough_alignment": 0.1366666666666667
+        }
+      },
+      "original_vs_llm": {
+        "chapter": {
+          "pearson_r": 0.10191281010793805,
+          "pearson_p": 0.31300101606223524,
+          "spearman_rho": 0.12895289528952894,
+          "spearman_p": 0.20101595340877543,
+          "dtw_distance": 0.5035495610090722,
+          "rmse": 0.5095965066520511,
+          "mean_abs_diff": 0.5035495610090724,
+          "cosine_similarity": 0.9607730310461599,
+          "peak_alignment": 0.05333333333333334,
+          "trough_alignment": 0.10333333333333333
+        },
+        "pct_normalized": {
+          "pearson_r": 0.10191281010793805,
+          "pearson_p": 0.31300101606223524,
+          "spearman_rho": 0.12895289528952894,
+          "spearman_p": 0.20101595340877543,
+          "dtw_distance": 0.5035495610090722,
+          "rmse": 0.5095965066520511,
+          "mean_abs_diff": 0.5035495610090724,
+          "cosine_similarity": 0.9607730310461599,
+          "peak_alignment": 0.05333333333333334,
+          "trough_alignment": 0.10333333333333333
+        }
+      },
+      "human_vs_llm": {
+        "chapter": {
+          "pearson_r": 0.3397582911830483,
+          "pearson_p": 0.0005435077004662994,
+          "spearman_rho": 0.34438643864386437,
+          "spearman_p": 0.0004505832440309658,
+          "dtw_distance": 0.07284752764433773,
+          "rmse": 0.18979447605710764,
+          "mean_abs_diff": 0.16996024611324334,
+          "cosine_similarity": 0.9880692021810722,
+          "peak_alignment": 0.05333333333333334,
+          "trough_alignment": 0.13
+        },
+        "pct_normalized": {
+          "pearson_r": 0.3397582911830483,
+          "pearson_p": 0.0005435077004662994,
+          "spearman_rho": 0.34438643864386437,
+          "spearman_p": 0.0004505832440309658,
+          "dtw_distance": 0.07284752764433773,
+          "rmse": 0.18979447605710764,
+          "mean_abs_diff": 0.16996024611324334,
+          "cosine_similarity": 0.9880692021810722,
+          "peak_alignment": 0.05333333333333334,
+          "trough_alignment": 0.13
+        }
+      }
+    }
+  }
+}

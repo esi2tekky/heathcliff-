@@ -128,7 +128,14 @@ def _detect_chapter_pattern(text: str, lang: str, expected_chapters: int = None)
     patterns = _pattern_list(lang)
 
     for label, regex in patterns:
-        matches = list(regex.finditer(text))
+        all_matches = list(regex.finditer(text))
+        # Filter out table-of-contents entries: keep only matches whose
+        # next match is > 500 chars away (TOC entries are consecutive lines).
+        matches = []
+        for i, m in enumerate(all_matches):
+            next_start = all_matches[i + 1].start() if i + 1 < len(all_matches) else len(text)
+            if next_start - m.start() > 500:
+                matches.append(m)
         n = len(matches)
         if n < 2:
             continue
