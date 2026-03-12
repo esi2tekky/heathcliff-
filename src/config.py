@@ -88,7 +88,7 @@ BOOKS = [
 # ---------------------------------------------------------------------------
 # API configuration (Vertex AI)
 # ---------------------------------------------------------------------------
-GCP_PROJECT_ID = "cs-224n-487823"
+GCP_PROJECT_ID = "focused-studio-487804-s4"
 GCP_REGION = "us-central1"
 
 # Gemini
@@ -99,6 +99,7 @@ TRANSLATE_TEMPERATURE = 0.3
 TRANSLATE_MAX_TOKENS = 65536
 RATE_LIMIT_DELAY = 1.0  # seconds between API calls
 PARALLEL_WORKERS = 20   # max concurrent API calls for parallel translation
+TEMP_SWEEP_TEMPS = [0.1, 0.3, 0.5, 0.7, 1.0]
 
 # ---------------------------------------------------------------------------
 # Sentiment configuration

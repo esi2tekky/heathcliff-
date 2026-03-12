@@ -13,6 +13,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from pathlib import Path
 
 import vertexai
 from vertexai.generative_models import GenerativeModel
@@ -682,6 +683,298 @@ def translate_book_best_of_n(
         "Best-of-%d (shape) translation complete for %s: %d chapters, "
         "%d total input tokens, %d total output tokens.",
         n, book["title"],
+        result["metadata"]["n_chapters_translated"],
+        result["metadata"]["total_input_tokens"],
+        result["metadata"]["total_output_tokens"],
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Temperature sweep translation
+# ---------------------------------------------------------------------------
+
+def _estimate_xlm_language_offset(book: dict) -> float:
+    """Estimate the systematic XLM-RoBERTa bias between original and human-translated text.
+
+    Scans data/processed/ for matching {slug}_en_original_xlm_roberta.json and
+    {slug}_fr_human_xlm_roberta.json pairs. Computes mean per-point difference
+    (human_translated - original) across all aligned data.
+
+    For chapter-level files with matching counts, uses those directly.
+    Falls back to sliding-window files (always 100 points) for mismatched counts.
+
+    Returns the mean offset (negative for en_to_fr, positive for fr_to_en),
+    or 0.0 if no calibration data is found.
+    """
+    import glob as glob_mod
+
+    direction = book["direction"]
+    if direction == "en_to_fr":
+        orig_suffix = "en_original"
+        human_suffix = "fr_human"
+    else:
+        orig_suffix = "fr_original"
+        human_suffix = "en_human"
+
+    processed = config.PROCESSED_DIR
+    all_diffs = []
+
+    # Find all slugs that have both original and human xlm_roberta files.
+    orig_pattern = str(processed / f"*_{orig_suffix}_xlm_roberta.json")
+    for orig_path in sorted(glob_mod.glob(orig_pattern)):
+        # Extract slug from filename.
+        fname = Path(orig_path).name
+        slug = fname.replace(f"_{orig_suffix}_xlm_roberta.json", "")
+
+        human_path = processed / f"{slug}_{human_suffix}_xlm_roberta.json"
+        if not human_path.exists():
+            continue
+
+        with open(orig_path, "r", encoding="utf-8") as f:
+            orig_data = json.load(f)
+        with open(human_path, "r", encoding="utf-8") as f:
+            human_data = json.load(f)
+
+        orig_scores = orig_data["scores"]
+        human_scores = human_data["scores"]
+
+        if len(orig_scores) == len(human_scores):
+            # Chapter counts match — use chapter-level scores.
+            diffs = [h - o for h, o in zip(human_scores, orig_scores)]
+            all_diffs.extend(diffs)
+            logger.info(
+                "  Calibration: %s chapter-level (%d points), mean diff=%.4f",
+                slug, len(diffs), sum(diffs) / len(diffs),
+            )
+        else:
+            # Mismatched chapter counts — fall back to sliding-window files.
+            sw_orig_path = processed / f"{slug}_{orig_suffix}_sw_xlm_roberta.json"
+            sw_human_path = processed / f"{slug}_{human_suffix}_sw_xlm_roberta.json"
+            if sw_orig_path.exists() and sw_human_path.exists():
+                with open(sw_orig_path, "r", encoding="utf-8") as f:
+                    sw_orig = json.load(f)
+                with open(sw_human_path, "r", encoding="utf-8") as f:
+                    sw_human = json.load(f)
+                sw_orig_scores = sw_orig["scores"]
+                sw_human_scores = sw_human["scores"]
+                n = min(len(sw_orig_scores), len(sw_human_scores))
+                diffs = [sw_human_scores[j] - sw_orig_scores[j] for j in range(n)]
+                all_diffs.extend(diffs)
+                logger.info(
+                    "  Calibration: %s sliding-window (%d points), mean diff=%.4f",
+                    slug, len(diffs), sum(diffs) / len(diffs),
+                )
+            else:
+                logger.debug(
+                    "  Calibration: %s chapter mismatch (%d vs %d) and no sw files; skipping.",
+                    slug, len(orig_scores), len(human_scores),
+                )
+
+    if not all_diffs:
+        logger.warning(
+            "No calibration data found for direction=%s; using offset=0.0", direction,
+        )
+        return 0.0
+
+    offset = sum(all_diffs) / len(all_diffs)
+    logger.info(
+        "Estimated XLM language offset for %s: %.6f (from %d aligned points)",
+        direction, offset, len(all_diffs),
+    )
+    return offset
+
+
+def translate_book_temp_sweep(
+    book: dict,
+    force: bool = False,
+) -> dict:
+    """Translate with temperature sweep: pick the candidate closest to original sentiment.
+
+    For each chapter:
+      1. Score the original chapter with XLM-RoBERTa.
+      2. Translate in parallel at each temperature in config.TEMP_SWEEP_TEMPS.
+      3. Score each candidate translation with XLM-RoBERTa.
+      4. Select the candidate minimizing |score_candidate - score_original|.
+
+    Saves to ``{slug}_llm_tempsweep.json`` and also writes to the standard
+    ``{slug}_llm.json`` for downstream pipeline compatibility.
+    """
+    slug = book["slug"]
+    orig_lang = config.original_lang(book)
+    trans_lang = config.translation_lang(book)
+    temps = config.TEMP_SWEEP_TEMPS
+
+    input_path = config.PROCESSED_DIR / f"{slug}_{orig_lang}.json"
+    if not input_path.exists():
+        raise FileNotFoundError(
+            f"Chapter-split file not found: {input_path}. "
+            f"Run chapter splitting first."
+        )
+
+    with open(input_path, "r", encoding="utf-8") as f:
+        source_data = json.load(f)
+
+    source_chapters = source_data["chapters"]
+    n_chapters = len(source_chapters)
+
+    config.TRANSLATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    sweep_path = config.TRANSLATIONS_DIR / f"{slug}_llm_tempsweep.json"
+    output_path = config.TRANSLATIONS_DIR / f"{slug}_llm.json"
+
+    # ----- Load existing checkpoint or initialise --------------------------
+    result = None
+    if sweep_path.exists() and not force:
+        with open(sweep_path, "r", encoding="utf-8") as f:
+            result = json.load(f)
+        logger.info(
+            "Resuming temp-sweep %s: %d / %d chapters done.",
+            slug,
+            result["metadata"]["n_chapters_translated"],
+            n_chapters,
+        )
+    if result is None:
+        result = {
+            "title": book["title"],
+            "author": book["author"],
+            "language": trans_lang,
+            "source_language": orig_lang,
+            "direction": book["direction"],
+            "model": config.GEMINI_MODEL_TRANSLATE,
+            "method": "temp_sweep",
+            "temperatures": temps,
+            "selection_criterion": "min_abs_sentiment_delta",
+            "n_chapters": n_chapters,
+            "chapters": [None] * n_chapters,
+            "metadata": {
+                "n_chapters_translated": 0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+            },
+        }
+
+    # Estimate cross-language sentiment bias for calibrated selection.
+    offset = _estimate_xlm_language_offset(book)
+    logger.info("Calibration offset for temp-sweep: %.6f", offset)
+
+    system_prompt = _system_prompt(book)
+    vertexai.init(project=config.GCP_PROJECT_ID, location=config.GCP_REGION)
+    model = GenerativeModel(config.GEMINI_MODEL_TRANSLATE)
+
+    for i, src_chapter in enumerate(source_chapters):
+        if result["chapters"][i] is not None:
+            logger.debug("Chapter %d already done (temp-sweep), skipping.", i + 1)
+            continue
+
+        logger.info(
+            "Temp-sweep: %s — chapter %d / %d — scoring original ...",
+            book["title"], i + 1, n_chapters,
+        )
+
+        # 1. Score the original chapter and compute adjusted target.
+        original_score = _score_text_xlm(src_chapter["text"])
+        adjusted_target = original_score + offset
+        logger.info("  Original score: %.4f, adjusted target: %.4f (offset=%.4f)",
+                     original_score, adjusted_target, offset)
+
+        # 2. Translate in parallel at each temperature.
+        logger.info("  Translating at %d temperatures: %s ...", len(temps), temps)
+        candidates = [None] * len(temps)
+        total_in = 0
+        total_out = 0
+
+        with ThreadPoolExecutor(max_workers=min(len(temps), config.PARALLEL_WORKERS)) as executor:
+            future_to_idx = {
+                executor.submit(
+                    _translate_chapter_with_temp,
+                    model, src_chapter["text"], system_prompt, temp,
+                ): idx
+                for idx, temp in enumerate(temps)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    api_result = future.result()
+                    candidates[idx] = api_result
+                    total_in += api_result["input_tokens"]
+                    total_out += api_result["output_tokens"]
+                except Exception:
+                    logger.exception(
+                        "  Translation failed at temp=%.1f for chapter %d",
+                        temps[idx], i + 1,
+                    )
+
+        # Filter out failed candidates.
+        valid = [(idx, c) for idx, c in enumerate(candidates) if c is not None]
+        if not valid:
+            logger.error("  No candidates produced for chapter %d; skipping.", i + 1)
+            continue
+
+        # 3. Score each candidate translation.
+        candidate_scores = []
+        for idx, cand in valid:
+            score = _score_text_xlm(cand["translated_text"])
+            candidate_scores.append((idx, score))
+
+        # 4. Select candidate minimizing |score_candidate - adjusted_target|.
+        best_idx, best_score = min(
+            candidate_scores, key=lambda x: abs(x[1] - adjusted_target)
+        )
+        best_cand = candidates[best_idx]
+        best_text = best_cand["translated_text"]
+        best_delta = abs(best_score - adjusted_target)
+
+        # Build score map for metadata.
+        all_scores = {f"{temps[idx]:.1f}": round(score, 6) for idx, score in candidate_scores}
+
+        logger.info("  Candidate scores: %s", all_scores)
+        logger.info(
+            "  Selected temp=%.1f (score=%.4f, delta=%.4f from adjusted target=%.4f)",
+            temps[best_idx], best_score, best_delta, adjusted_target,
+        )
+
+        result["chapters"][i] = {
+            "number": src_chapter.get("number", i + 1),
+            "title": src_chapter.get("title", ""),
+            "text": best_text,
+            "char_count": len(best_text),
+            "word_count": len(best_text.split()),
+            "input_tokens": total_in,
+            "output_tokens": total_out,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "temp_sweep_metadata": {
+                "temperatures": temps,
+                "original_score": round(original_score, 6),
+                "calibration_offset": round(offset, 6),
+                "adjusted_target": round(adjusted_target, 6),
+                "candidate_scores": all_scores,
+                "selected_temperature": temps[best_idx],
+                "selected_score": round(best_score, 6),
+                "selected_delta": round(best_delta, 6),
+            },
+        }
+
+        result["metadata"]["n_chapters_translated"] += 1
+        result["metadata"]["total_input_tokens"] += total_in
+        result["metadata"]["total_output_tokens"] += total_out
+
+        # Checkpoint to the sweep-specific file.
+        with open(sweep_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+        logger.info(
+            "  Chapter %d done — %d candidates, %d total tokens.",
+            i + 1, len(valid), total_in + total_out,
+        )
+
+    # Also write to the standard _llm.json so the pipeline picks it up.
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    logger.info(
+        "Temp-sweep translation complete for %s: %d chapters, "
+        "%d total input tokens, %d total output tokens.",
+        book["title"],
         result["metadata"]["n_chapters_translated"],
         result["metadata"]["total_input_tokens"],
         result["metadata"]["total_output_tokens"],
