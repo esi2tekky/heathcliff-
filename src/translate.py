@@ -788,6 +788,7 @@ def _estimate_xlm_language_offset(book: dict) -> float:
 def translate_book_temp_sweep(
     book: dict,
     force: bool = False,
+    calibrate: bool = False,
 ) -> dict:
     """Translate with temperature sweep: pick the candidate closest to original sentiment.
 
@@ -819,7 +820,8 @@ def translate_book_temp_sweep(
     n_chapters = len(source_chapters)
 
     config.TRANSLATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    sweep_path = config.TRANSLATIONS_DIR / f"{slug}_llm_tempsweep.json"
+    suffix = "tempsweep_cal" if calibrate else "tempsweep"
+    sweep_path = config.TRANSLATIONS_DIR / f"{slug}_llm_{suffix}.json"
     output_path = config.TRANSLATIONS_DIR / f"{slug}_llm.json"
 
     # ----- Load existing checkpoint or initialise --------------------------
@@ -854,8 +856,12 @@ def translate_book_temp_sweep(
         }
 
     # Estimate cross-language sentiment bias for calibrated selection.
-    offset = _estimate_xlm_language_offset(book)
-    logger.info("Calibration offset for temp-sweep: %.6f", offset)
+    if calibrate:
+        offset = _estimate_xlm_language_offset(book)
+        logger.info("Calibration offset for temp-sweep: %.6f", offset)
+    else:
+        offset = 0.0
+        logger.info("Temp-sweep running WITHOUT calibration (offset=0).")
 
     system_prompt = _system_prompt(book)
     vertexai.init(project=config.GCP_PROJECT_ID, location=config.GCP_REGION)

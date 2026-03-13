@@ -96,6 +96,11 @@ def _version_to_path(book: dict, version: str) -> Path:
       - en_llm / fr_llm             -> data/translations/{slug}_llm.json
     """
     slug = book["slug"]
+    if "_llm_tempsweep" in version:
+        # e.g. "fr_llm_tempsweep" -> data/translations/{slug}_llm_tempsweep.json
+        #       "fr_llm_tempsweep_cal" -> data/translations/{slug}_llm_tempsweep_cal.json
+        suffix = version.split("_llm_")[-1]  # "tempsweep" or "tempsweep_cal"
+        return config.TRANSLATIONS_DIR / f"{slug}_llm_{suffix}.json"
     if "_llm_bon" in version:
         # e.g. "fr_llm_bon1" -> data/translations/{slug}_llm_bon1.json
         bon_suffix = version.split("_llm_")[-1]  # "bon1", "bon5", etc.

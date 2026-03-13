@@ -133,6 +133,7 @@ def phase_translate(
     parallel: bool = False,
     best_of_n: int | None = None,
     translate_method: str | None = None,
+    calibrate: bool = False,
 ) -> None:
     """Translate chapters via Vertex AI (Gemini)."""
     _phase_header("translate")
@@ -152,7 +153,10 @@ def phase_translate(
     try:
         if translate_method == "temp-sweep":
             for book in tqdm(books, desc="Translating (temp-sweep)"):
-                translate_book_temp_sweep(book, force=force)
+                translate_book_temp_sweep(book, force=force, calibrate=calibrate)
+        elif translate_method == "temp-sweep-cal":
+            for book in tqdm(books, desc="Translating (calibrated temp-sweep)"):
+                translate_book_temp_sweep(book, force=force, calibrate=True)
         elif translate_method == "best-of-n":
             n = best_of_n if (best_of_n is not None and best_of_n > 1) else 5
             for book in tqdm(books, desc=f"Translating (best-of-{n})"):
@@ -320,9 +324,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--translate-method",
-        choices=["sequential", "parallel", "best-of-n", "temp-sweep"],
+        choices=["sequential", "parallel", "best-of-n", "temp-sweep", "temp-sweep-cal"],
         default=None,
         help="Translation method (overrides --parallel and --best-of-n flags)",
+    )
+    parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="Enable calibration offset for temp-sweep translation (Layer 3)",
     )
     parser.add_argument(
         "--force",
@@ -355,7 +364,7 @@ def main() -> None:
 
     # ----- translate -----
     if run_all or args.phase == "translate":
-        phase_translate(books, skip_llm=args.skip_llm_translate, force=args.force, parallel=args.parallel, best_of_n=args.best_of_n, translate_method=args.translate_method)
+        phase_translate(books, skip_llm=args.skip_llm_translate, force=args.force, parallel=args.parallel, best_of_n=args.best_of_n, translate_method=args.translate_method, calibrate=args.calibrate)
 
     # ----- sentiment -----
     if run_all or args.phase == "sentiment":

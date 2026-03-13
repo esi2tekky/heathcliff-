@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gcloud auth list)",
+      "Bash(gcloud config get-value project)",
+      "Bash(ls -lt /Users/juliarhee/Documents/heathcliff-/data/processed/treasure_island_*)",
+      "Bash(ls -lt /Users/juliarhee/Documents/heathcliff-/data/raw/treasure_island_*)",
+      "Bash(lsof -p 29368)",
+      "Bash(ps -p 29368 -o pid,state,etime,pcpu,pmem,command)"
+    ]
+  }
+}
