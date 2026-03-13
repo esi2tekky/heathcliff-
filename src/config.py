@@ -92,6 +92,15 @@ BOOKS = [
         "direction": "en_to_fr",
         "expected_chapters": 21,
     },
+    {
+        "title": "Treasure Island",
+        "slug": "treasure_island",
+        "author": "Stevenson",
+        "fr_ids": [76225],
+        "en_id": 120,
+        "direction": "en_to_fr",
+        "expected_chapters": 34,
+    },
 ]
 
 # ---------------------------------------------------------------------------
