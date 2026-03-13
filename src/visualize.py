@@ -474,25 +474,18 @@ def plot_bon_comparison(book: dict, method: str, n_values: list[int] | None = No
     arcs_for_diff: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
     for n_val in n_values:
-        # Check if we have a bon-specific translation file
-        if n_val == 1:
-            # N=1 is the baseline — check for _llm_n1.json backup first,
-            # then fall back to the standard processed scores
-            bon_path = TRANSLATIONS_DIR / f"{slug}_llm_n1.json"
-            if bon_path.exists():
-                # Need to load scores from processed dir tagged with bon1
+        bon_path = TRANSLATIONS_DIR / f"{slug}_llm_bon{n_val}.json"
+        if not bon_path.exists():
+            if n_val == 1:
+                # Fall back to standard LLM scores for N=1
                 score_label = llm_ver
             else:
-                score_label = llm_ver
-        else:
-            # For N>1, check if bon-specific scores exist
-            # The bon translation overwrites _llm.json, so scores are
-            # tagged with the standard llm version label
-            bon_path = TRANSLATIONS_DIR / f"{slug}_llm_bon{n_val}.json"
-            if not bon_path.exists():
                 logger.info("No best-of-%d translation found for %s", n_val, slug)
                 continue
-            score_label = llm_ver
+        else:
+            # Use bon-specific scores (e.g. "fr_llm_bon1", "fr_llm_bon5")
+            lang_prefix = llm_ver.split("_")[0]  # "fr" or "en"
+            score_label = f"{lang_prefix}_llm_bon{n_val}"
 
         try:
             raw = _load_scores(slug, score_label, method)

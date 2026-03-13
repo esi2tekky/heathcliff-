@@ -83,16 +83,25 @@ BOOKS = [
         "direction": "en_to_fr",
         "expected_chapters": 34,
     },
+    {
+        "title": "Treasure Island",
+        "slug": "treasure_island",
+        "author": "Stevenson",
+        "fr_ids": [76225],
+        "en_id": 120,
+        "direction": "en_to_fr",
+        "expected_chapters": 34,
+    },
 ]
 
 # ---------------------------------------------------------------------------
 # API configuration (Vertex AI)
 # ---------------------------------------------------------------------------
-GCP_PROJECT_ID = "focused-studio-487804-s4"
+GCP_PROJECT_ID = "cs224n-488022"
 GCP_REGION = "us-central1"
 
 # Gemini
-GEMINI_MODEL_TRANSLATE = "gemini-2.5-pro"
+GEMINI_MODEL_TRANSLATE = "gemini-2.5-flash"
 GEMINI_MODEL_JUDGE = "gemini-2.0-flash"
 
 TRANSLATE_TEMPERATURE = 0.3
@@ -113,6 +122,9 @@ LABMT_CACHE_PATH = DATA_DIR / "labmt_fr.json"
 # Sliding-window (Reagan et al.) configuration
 SW_WINDOW_WORDS = 10_000    # W = 10,000 words per window
 SW_N_POINTS = 100           # n = 100 evenly-spaced sample points
+
+# labMT neutral-word filter (Reagan et al. Δh_stop = 1.0)
+LABMT_DELTA_H_STOP = 1.0   # exclude words with happiness in [5-Δ, 5+Δ]
 
 # ---------------------------------------------------------------------------
 # Smoothing / metrics configuration

@@ -96,6 +96,10 @@ def _version_to_path(book: dict, version: str) -> Path:
       - en_llm / fr_llm             -> data/translations/{slug}_llm.json
     """
     slug = book["slug"]
+    if "_llm_bon" in version:
+        # e.g. "fr_llm_bon1" -> data/translations/{slug}_llm_bon1.json
+        bon_suffix = version.split("_llm_")[-1]  # "bon1", "bon5", etc.
+        return config.TRANSLATIONS_DIR / f"{slug}_llm_{bon_suffix}.json"
     if version.endswith("_llm"):
         return config.TRANSLATIONS_DIR / f"{slug}_llm.json"
     # original or human: derive language suffix from the version prefix
@@ -191,12 +195,15 @@ def _score_labmt(text: str) -> float:
     """Score a French text using the labMT happiness lexicon.
 
     Tokenises on whitespace/punctuation boundaries, looks up each token in
-    the lexicon, and computes ``(mean_happs - 5) / 4`` to produce a value
-    in approximately [-1, 1].
+    the lexicon, excludes emotionally neutral words (within Δh_stop of the
+    neutral point 5.0, per Reagan et al.), and computes
+    ``(mean_happs - 5) / 4`` to produce a value in approximately [-1, 1].
     """
     lexicon = _load_labmt_lexicon()
+    delta = config.LABMT_DELTA_H_STOP
     tokens = re.findall(r"[a-z\u00e0-\u00ff]+", text.lower())
-    scores = [lexicon[t] for t in tokens if t in lexicon]
+    scores = [lexicon[t] for t in tokens
+              if t in lexicon and abs(lexicon[t] - 5.0) > delta]
     if not scores:
         logger.warning("labMT: no lexicon matches found; returning 0.0")
         return 0.0
