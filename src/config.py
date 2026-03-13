@@ -84,6 +84,15 @@ BOOKS = [
         "expected_chapters": 34,
     },
     {
+        "title": "The Picture of Dorian Gray",
+        "slug": "dorian_gray",
+        "author": "Wilde",
+        "fr_ids": [14192],
+        "en_id": 174,
+        "direction": "en_to_fr",
+        "expected_chapters": 21,
+    },
+    {
         "title": "Treasure Island",
         "slug": "treasure_island",
         "author": "Stevenson",
